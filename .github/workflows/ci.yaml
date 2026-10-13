@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node: [22, 24]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: ${{ matrix.node }}
+      - run: yarn install --immutable
+      - run: yarn lint
+      - run: yarn type-check
+      - run: yarn test
+      - run: yarn format-check
+      - name: Check that dist/ matches the source
+        run: |
+          yarn build
+          # status, unlike diff, also catches a bundle file that was never committed.
+          if [ -n "$(git status --porcelain -- dist)" ]; then
+            echo 'dist/ is stale: run `yarn build` and commit it.'
+            git status --porcelain -- dist
+            exit 1
+          fi

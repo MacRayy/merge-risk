@@ -1,0 +1,25 @@
+version: 1
+
+default-tier: risky
+
+tiers:
+  safe:
+    approvals: 0
+  risky:
+    approvals: 1
+  very-risky:
+    approvals: 1
+
+zones:
+  - tier: safe
+    paths: ['**/*.md', 'examples/**']
+  - tier: risky
+    # dist/ is checked against the source in CI, so it is as risky as the source it comes from.
+    paths: ['src/cli/**', 'scripts/**', 'dist/**', 'package.json', 'yarn.lock']
+  - tier: very-risky
+    # The code that decides a tier or a verdict is the gate itself.
+    paths: ['action.yml', 'src/core/**', 'src/policy/**', 'src/github/**', '.github/**']
+
+size:
+  bump-above-lines: 600
+  exclude: ['dist/**', 'yarn.lock', '**/*.test.ts']

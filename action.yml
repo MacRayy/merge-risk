@@ -1,0 +1,26 @@
+name: merge-risk
+description: Scores a pull request's merge risk and gates the merge on the review its tier requires.
+author: Attrecto
+branding:
+  icon: shield
+  color: orange
+inputs:
+  github-token:
+    description:
+      GITHUB_TOKEN or a GitHub App token with pull-requests, issues and statuses write access.
+      Personal tokens are not supported.
+    default: ${{ github.token }}
+  policy-path:
+    description: The policy file, read from the PR's base commit.
+    default: .merge-risk.yml
+  status-context:
+    description: The commit status to report; make this the required check.
+    default: merge-risk
+outputs:
+  tier:
+    description: safe, risky or very-risky.
+  state:
+    description: success, pending or failure.
+runs:
+  using: node24
+  main: dist/action/index.mjs
