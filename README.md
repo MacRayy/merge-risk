@@ -75,8 +75,9 @@ bot, and on the PR's current head commit, so pushing after an approval needs a f
 reviewer's latest verdict counts. A request for changes blocks the merge on any tier until the
 reviewer approves or the review is dismissed.
 
-Anyone else who can review counts, so on a public repository that includes people outside the team.
-A collaborator who pushed commits onto someone else's PR can also approve it.
+Anyone else who can review counts. That suits private repositories, which merge-risk is built for:
+on a public repository it would include people outside the team. A collaborator who pushed commits
+onto someone else's PR can also approve it.
 
 ## GitHub setup
 
@@ -139,6 +140,10 @@ merge-risk evaluate --base origin/main
 
 Scores the current branch's commits against the base's policy, the way the gate will. `--json`
 prints the full assessment.
+
+## Licence
+
+[MIT](LICENSE)
 
 ## Development
 
