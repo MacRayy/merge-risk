@@ -7,6 +7,8 @@ export type ReviewState = 'approved' | 'changes-requested' | 'dismissed' | 'comm
 export type Review = {
   reviewer: string
   isBot: boolean
+  // On a public repository anyone can review; only people with write access count.
+  hasWriteAccess: boolean
   state: ReviewState
   commit: string | undefined
 }
@@ -58,7 +60,7 @@ const summarize = (
 
 export const decideGate = (input: GateInput): GateDecision => {
   const verdicts = latestVerdicts(input.reviews).filter(
-    (review) => !review.isBot && review.reviewer !== input.author,
+    (review) => !review.isBot && review.hasWriteAccess && review.reviewer !== input.author,
   )
   // An approval vouches for the commit it was given on; a later push needs a fresh one.
   const approvedBy = verdicts

@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest'
 const review = (reviewer: string, state: Review['state'], commit = 'head'): Review => ({
   reviewer,
   isBot: false,
+  hasWriteAccess: true,
   state,
   commit,
 })
@@ -42,6 +43,15 @@ describe('decideGate', () => {
   it("ignores the author's own approval and approvals from bots", () => {
     const reviews = [review('author', 'approved'), { ...review('ci', 'approved'), isBot: true }]
     expect(decide({ reviews }).state).toBe('pending')
+  })
+
+  it('ignores verdicts from reviewers without write access', () => {
+    const outsider = { hasWriteAccess: false }
+    const reviews = [
+      { ...review('stranger', 'approved'), ...outsider },
+      { ...review('troll', 'changes-requested'), ...outsider },
+    ]
+    expect(decide({ reviews })).toMatchObject({ state: 'pending', changesRequestedBy: [] })
   })
 
   it('ignores an approval given on an earlier commit', () => {

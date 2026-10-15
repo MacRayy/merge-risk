@@ -28984,13 +28984,22 @@ var toChangedFile = (file2) => {
     addedLines
   };
 };
-var toReviews = (reviews) => reviews.flatMap((review) => {
+var canPush = (response) => response.user?.permissions?.push === true;
+var reviewersToCheck = (reviews) => [
+  ...new Set(
+    reviews.flatMap(
+      (review) => review.user === null || review.user.type === "Bot" ? [] : [review.user.login]
+    )
+  )
+];
+var toReviews = (reviews, writers) => reviews.flatMap((review) => {
   const state = REVIEW_STATES[review.state];
   if (state === void 0 || review.user === null) return [];
   return [
     {
       reviewer: review.user.login,
       isBot: review.user.type === "Bot",
+      hasWriteAccess: writers.has(review.user.login),
       state,
       commit: review.commit_id ?? void 0
     }
@@ -29042,7 +29051,17 @@ var createGitHubPort = (octokit) => {
         ...pull(pr),
         per_page: PER_PAGE
       });
-      return toReviews(reviews);
+      const writers = await Promise.all(
+        reviewersToCheck(reviews).map(async (login) => {
+          const { data } = await octokit.rest.repos.getCollaboratorPermissionLevel({
+            owner: pr.owner,
+            repo: pr.repo,
+            username: login
+          });
+          return canPush(data) ? [login] : [];
+        })
+      );
+      return toReviews(reviews, new Set(writers.flat()));
     },
     listLabels: async (pr) => {
       const labels = await octokit.paginate(octokit.rest.issues.listLabelsOnIssue, {
@@ -29175,7 +29194,7 @@ var summarize = (required2, approvedBy, blockers) => {
 };
 var decideGate = (input2) => {
   const verdicts = latestVerdicts(input2.reviews).filter(
-    (review) => !review.isBot && review.reviewer !== input2.author
+    (review) => !review.isBot && review.hasWriteAccess && review.reviewer !== input2.author
   );
   const approvedBy = verdicts.filter((review) => review.state === "approved" && review.commit === input2.headCommit).map((review) => review.reviewer);
   const blockers = verdicts.filter((review) => review.state === "changes-requested").map((review) => review.reviewer);
