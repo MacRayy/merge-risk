@@ -21,12 +21,13 @@ jobs:
       - run: yarn type-check
       - run: yarn test
       - run: yarn format-check
-      - name: Check that dist/ matches the source
+      - name: Check that the tree matches the source
         run: |
           yarn build
-          # status, unlike diff, also catches a bundle file that was never committed.
-          if [ -n "$(git status --porcelain -- dist)" ]; then
-            echo 'dist/ is stale: run `yarn build` and commit it.'
-            git status --porcelain -- dist
+          # status, unlike diff, also catches a bundle file that was never committed. The whole tree,
+          # not only dist/: yarn install also rewrites package.json, and the release refuses that too.
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "The install or build changed tracked files: run them and commit the result."
+            git status --porcelain
             exit 1
           fi
