@@ -61,5 +61,15 @@ export default [
       '@typescript-eslint/no-unsafe-assignment': 'off',
     },
   },
+  {
+    // Untyped build scripts: the type-aware rules only see `any` here.
+    files: ['scripts/**/*.mjs'],
+    rules: {
+      '@typescript-eslint/explicit-function-return-type': 'off',
+      '@typescript-eslint/no-unsafe-argument': 'off',
+      '@typescript-eslint/no-unsafe-assignment': 'off',
+      '@typescript-eslint/no-unsafe-member-access': 'off',
+    },
+  },
   prettier,
 ]

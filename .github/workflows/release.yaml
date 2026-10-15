@@ -1,0 +1,95 @@
+name: Release
+
+# Releases start from a merged version bump, never from a pushed tag: a tag can point at any
+# commit, while main only moves through the merge gate. npm's trusted publisher is bound to this
+# workflow and to the `npm` environment, which only main may deploy to.
+on:
+  push:
+    branches: [main]
+    paths: [package.json]
+  # Finishes a release by hand, e.g. after the first version was published by hand. The `npm`
+  # environment still admits only main.
+  workflow_dispatch:
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    environment: npm
+    permissions:
+      # Creates the release tag and moves the major tag (v0, v1, …) the Action's users pin to.
+      contents: write
+      # npm trusted publishing: the registry accepts this workflow's OIDC token instead of an npm token.
+      id-token: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+      - name: Read the version
+        id: version
+        run: |
+          version=$(node -p "require('./package.json').version")
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if git rev-parse --verify --quiet "refs/tags/v$version" >/dev/null; then
+            echo "v$version is already released"
+            echo "new=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "new=true" >> "$GITHUB_OUTPUT"
+          fi
+      - if: steps.version.outputs.new == 'true'
+        run: yarn install --immutable
+      - if: steps.version.outputs.new == 'true'
+        run: yarn lint && yarn type-check && yarn test && yarn format-check
+      - name: Check that dist/ matches the source
+        if: steps.version.outputs.new == 'true'
+        run: |
+          yarn build
+          if [ -n "$(git status --porcelain)" ]; then
+            echo 'dist/ is stale: run `yarn build` and commit it.'
+            git status --porcelain
+            exit 1
+          fi
+      - name: Check the npm version
+        if: steps.version.outputs.new == 'true'
+        # Trusted publishing needs npm 11.5.1 or later; Node 24 bundles a recent enough one.
+        run: |
+          npm --version
+          node -e "const [a,b,c]=process.argv[1].split('.').map(Number); process.exit(a>11||(a===11&&(b>5||(b===5&&c>=1)))?0:1)" "$(npm --version)"
+      - name: Publish to npm
+        if: steps.version.outputs.new == 'true'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          name=$(node -p "require('./package.json').name")
+          # A version already on the registry (the first one was published by hand) is left alone.
+          if npm view "$name@$VERSION" version >/dev/null 2>&1; then
+            echo "$name@$VERSION is already published"
+          elif [[ "$VERSION" == *-* ]]; then
+            npm publish --tag next
+          else
+            npm publish
+          fi
+      - name: Tag the release
+        if: steps.version.outputs.new == 'true'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          git tag "v$VERSION"
+          refs=("refs/tags/v$VERSION")
+          # Pre-releases and versions below the newest one in their major leave the major tag alone,
+          # so it never moves onto a release candidate or back to an older release.
+          major="v${VERSION%%.*}"
+          newest=$(git tag --list "$major.*.*" | grep -v -- - | sort -V | tail -1)
+          if [[ "$VERSION" != *-* && "$newest" == "v$VERSION" ]]; then
+            git tag --force "$major"
+            refs+=("+refs/tags/$major")
+          fi
+          # Both tags or neither: a re-run skips a version whose tag exists, so a half-pushed
+          # release would leave the major tag behind for good.
+          git push --atomic origin "${refs[@]}"
