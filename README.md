@@ -135,11 +135,12 @@ onto someone else's PR can also approve it.
 ## Local preview
 
 ```sh
-merge-risk evaluate --base origin/main
+npx @attrectodev/merge-risk evaluate --base origin/main
 ```
 
 Scores the current branch's commits against the base's policy, the way the gate will. `--json`
-prints the full assessment.
+prints the full assessment, and `--workflow` names the gate's workflow file if it isn't
+`.github/workflows/merge-risk.{yml,yaml}`.
 
 ## Licence
 
@@ -154,3 +155,30 @@ yarn lint
 yarn type-check
 yarn build   # rebuilds dist/, which must be committed with the source change
 ```
+
+## Releasing
+
+Merge a PR that bumps `version` in `package.json`. The release workflow then checks the build,
+publishes the CLI to npm, tags the release (`v0.3.0`) and moves the major tag (`v0`) that the
+Action's users pin to. A version with a pre-release suffix (`1.0.0-rc.1`) is published under the
+`next` dist-tag and leaves the major tag alone.
+
+Releases start only from `main`, which moves only through the merge gate. npm accepts a publish only
+from this repository's `release.yaml` running in the `npm` environment, and that environment only
+admits `main`.
+
+### One-time setup
+
+npm can only bind a trusted publisher to a package that already exists, so the first version is
+published by hand:
+
+1. Create the `npm` environment (Settings → Environments) with deployment branches limited to
+   `main`, before the workflow first runs. A workflow that names a missing environment makes GitHub
+   create it with no branch restriction.
+2. From a clean, up-to-date `main`, run `npm publish`. The `prepublishOnly` guard refuses a dirty
+   tree or a stale `dist/`.
+3. On npmjs.com, add a trusted publisher to the package: GitHub Actions, owner `attrecto`,
+   repository `merge-risk`, workflow `release.yaml`, environment `npm`.
+4. Set the package to require two-factor authentication and disallow tokens.
+5. Run the release workflow by hand on `main` (Actions → Release → Run workflow). It finds the
+   version on npm, skips the publish and creates the tags.

@@ -66,9 +66,9 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@attrecto/merge-risk@workspace:.":
+"@attrectodev/merge-risk@workspace:.":
   version: 0.0.0-use.local
-  resolution: "@attrecto/merge-risk@workspace:."
+  resolution: "@attrectodev/merge-risk@workspace:."
   dependencies:
     "@actions/core": "npm:^3.0.1"
     "@actions/github": "npm:^9.1.1"

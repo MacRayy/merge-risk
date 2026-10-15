@@ -1,11 +1,26 @@
 {
-  "name": "@attrecto/merge-risk",
-  "version": "0.1.0",
+  "name": "@attrectodev/merge-risk",
+  "version": "0.2.0",
   "description": "Scores a pull request's merge risk and gates the merge on the review its tier requires.",
   "license": "MIT",
+  "keywords": [
+    "pull-request",
+    "merge-request",
+    "code-review",
+    "risk",
+    "github-action",
+    "ci"
+  ],
   "type": "module",
-  "private": true,
-  "bin": "dist/cli/index.mjs",
+  "bin": {
+    "merge-risk": "dist/cli/index.mjs"
+  },
+  "files": [
+    "dist/cli"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "build": "node scripts/build.mjs",
     "test": "vitest run",
@@ -14,7 +29,8 @@
     "lint:fix": "eslint . --fix",
     "type-check": "tsc --noEmit",
     "format": "prettier --write .",
-    "format-check": "prettier --check ."
+    "format-check": "prettier --check .",
+    "prepublishOnly": "node scripts/check-release.mjs"
   },
   "engines": {
     "node": ">=22.13.0"
@@ -23,15 +39,14 @@
     "type": "git",
     "url": "git+https://github.com/attrecto/merge-risk.git"
   },
+  "homepage": "https://github.com/attrecto/merge-risk#readme",
+  "bugs": {
+    "url": "https://github.com/attrecto/merge-risk/issues"
+  },
   "packageManager": "yarn@4.18.1",
-  "dependencies": {
+  "devDependencies": {
     "@actions/core": "^3.0.1",
     "@actions/github": "^9.1.1",
-    "picomatch": "^4.0.7",
-    "yaml": "^2.9.1",
-    "zod": "^4.6.7"
-  },
-  "devDependencies": {
     "@trivago/prettier-plugin-sort-imports": "^4.3.0",
     "@types/node": "^22",
     "@types/picomatch": "^4.0.3",
@@ -40,9 +55,12 @@
     "eslint-config-love": "155.0.0",
     "eslint-config-prettier": "^10.1.8",
     "eslint-plugin-import": "^2.32.0",
+    "picomatch": "^4.0.7",
     "prettier": "3.3.2",
     "typescript": "5.9.3",
     "typescript-eslint": "^8.71.1",
-    "vitest": "^4.1.11"
+    "vitest": "^4.1.11",
+    "yaml": "^2.9.1",
+    "zod": "^4.6.7"
   }
 }
