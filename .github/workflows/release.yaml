@@ -46,12 +46,12 @@ jobs:
         run: yarn install --immutable
       - if: steps.version.outputs.new == 'true'
         run: yarn lint && yarn type-check && yarn test && yarn format-check
-      - name: Check that dist/ matches the source
+      - name: Check that the tree matches the source
         if: steps.version.outputs.new == 'true'
         run: |
           yarn build
           if [ -n "$(git status --porcelain)" ]; then
-            echo 'dist/ is stale: run `yarn build` and commit it.'
+            echo "The install or build changed tracked files: run them and commit the result."
             git status --porcelain
             exit 1
           fi

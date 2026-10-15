@@ -12,9 +12,7 @@
     "ci"
   ],
   "type": "module",
-  "bin": {
-    "merge-risk": "dist/cli/index.mjs"
-  },
+  "bin": "dist/cli/index.mjs",
   "files": [
     "dist/cli"
   ],
