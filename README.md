@@ -71,13 +71,15 @@ size:
 ## Approvals
 
 An approval counts when it comes from someone other than the author, from a person rather than a
-bot, and on the PR's current head commit, so pushing after an approval needs a fresh one. Each
-reviewer's latest verdict counts. A request for changes blocks the merge on any tier until the
-reviewer approves or the review is dismissed.
+bot, from someone with write access to the repository, and on the PR's current head commit, so
+pushing after an approval needs a fresh one. Each reviewer's latest verdict counts. A request for
+changes blocks the merge on any tier until the reviewer approves or the review is dismissed.
 
-Anyone else who can review counts. That suits private repositories, which merge-risk is built for:
-on a public repository it would include people outside the team. A collaborator who pushed commits
-onto someone else's PR can also approve it.
+Write access means any role that can push, such as admin, maintain or write. On a public repository
+anyone can leave a review, but only reviews from people with write access count, approvals and
+requests for changes alike. Access is checked each time the gate runs, not when the review was left:
+a reviewer who loses write access stops counting at the next run. A collaborator who pushed commits
+onto someone else's PR can still approve it.
 
 ## GitHub setup
 

@@ -52,13 +52,27 @@ export const toChangedFile = (file: {
   }
 }
 
-export const toReviews = (
-  reviews: ReadonlyArray<{
-    user: { login: string; type: string } | null
-    state: string
-    commit_id: string | null
-  }>,
-): Review[] =>
+type RawReview = {
+  user: { login: string; type: string } | null
+  state: string
+  commit_id: string | null
+}
+
+// `push` covers every role that can write, custom roles included, without relying on how GitHub
+// maps roles onto the legacy `permission` names.
+export const canPush = (response: { user: { permissions?: { push: boolean } } | null }): boolean =>
+  response.user?.permissions?.push === true
+
+// The people whose access the gate has to look up: bots never count, so they are skipped.
+export const reviewersToCheck = (reviews: readonly RawReview[]): string[] => [
+  ...new Set(
+    reviews.flatMap((review) =>
+      review.user === null || review.user.type === 'Bot' ? [] : [review.user.login],
+    ),
+  ),
+]
+
+export const toReviews = (reviews: readonly RawReview[], writers: ReadonlySet<string>): Review[] =>
   reviews.flatMap((review) => {
     const state = REVIEW_STATES[review.state]
     if (state === undefined || review.user === null) return []
@@ -66,6 +80,7 @@ export const toReviews = (
       {
         reviewer: review.user.login,
         isBot: review.user.type === 'Bot',
+        hasWriteAccess: writers.has(review.user.login),
         state,
         commit: review.commit_id ?? undefined,
       },
@@ -120,7 +135,17 @@ export const createGitHubPort = (octokit: Octokit): GitHubPort => {
         ...pull(pr),
         per_page: PER_PAGE,
       })
-      return toReviews(reviews)
+      const writers = await Promise.all(
+        reviewersToCheck(reviews).map(async (login) => {
+          const { data } = await octokit.rest.repos.getCollaboratorPermissionLevel({
+            owner: pr.owner,
+            repo: pr.repo,
+            username: login,
+          })
+          return canPush(data) ? [login] : []
+        }),
+      )
+      return toReviews(reviews, new Set(writers.flat()))
     },
     listLabels: async (pr) => {
       const labels = await octokit.paginate(octokit.rest.issues.listLabelsOnIssue, {

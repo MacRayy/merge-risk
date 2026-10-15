@@ -62,7 +62,13 @@ describe('createGitHubGate', () => {
       state: 'pending',
       description: 'risky: Needs 1 more approval',
     })
-    state.reviews.push({ reviewer: 'alice', isBot: false, state: 'approved', commit: 'head-sha' })
+    state.reviews.push({
+      reviewer: 'alice',
+      isBot: false,
+      hasWriteAccess: true,
+      state: 'approved',
+      commit: 'head-sha',
+    })
     await run()
     expect(state.statuses.at(-1)).toMatchObject({ state: 'success' })
   })
