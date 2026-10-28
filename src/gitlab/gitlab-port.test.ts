@@ -108,6 +108,12 @@ describe('createGitLabPort', () => {
     })
   })
 
+  it('falls back to changes_count when the X-Total header is absent', async () => {
+    stubFetch((url) => (url.includes('/diffs') ? { body: [] } : { body: mr }))
+    const pull = await createGitLabPort(config()).getPullRequest(PR)
+    expect(pull.changedFiles).toBe(3)
+  })
+
   it('maps each current approval to a head-stamped approval review', async () => {
     stubFetch((url) => {
       if (url.includes('/approvals') && url.includes('/merge_requests/'))

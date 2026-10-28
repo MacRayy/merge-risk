@@ -20,8 +20,13 @@ export const runEvaluate = async (argv: readonly string[]): Promise<void> => {
       policy: { type: 'string', default: '.merge-risk.yml' },
       workflow: { type: 'string', default: '.github/workflows/merge-risk.{yml,yaml}' },
       json: { type: 'boolean', default: false },
+      help: { type: 'boolean', default: false },
     },
   })
+  if (values.help) {
+    console.log(EVALUATE_USAGE)
+    return
+  }
   const evaluation = await evaluateLocally({
     git: createGitPort(process.cwd()),
     base: values.base,

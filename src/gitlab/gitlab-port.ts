@@ -90,10 +90,14 @@ export const createGitLabPort = ({
   ): Promise<number> => {
     const res = await request('GET', `${mrBase(pr)}/diffs?per_page=1`)
     ensureOk(res, `${mrBase(pr)}/diffs`)
-    const total = Number(res.headers.get('x-total'))
-    // No X-Total header: fall back to the summary counter (its "N+" cap only over-reports, the safe
-    // direction for the incomplete-listing guard).
-    return Number.isInteger(total) && total >= 0 ? total : parseCount(changesCount)
+    // Number(null) is 0, so guard on the raw header being present — otherwise a missing X-Total would
+    // return 0 and silently disable the incomplete-listing guard. No header → fall back to the summary
+    // counter (its "N+" cap only over-reports, the safe direction).
+    const header = res.headers.get('x-total')
+    const total = Number(header)
+    return header !== null && Number.isInteger(total) && total >= 0
+      ? total
+      : parseCount(changesCount)
   }
 
   const resetApprovalsOnPush = async (): Promise<boolean> => {

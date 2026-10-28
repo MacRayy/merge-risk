@@ -29344,8 +29344,9 @@ var createGitLabPort = ({
   const changedFileCount = async (pr, changesCount) => {
     const res = await request("GET", `${mrBase(pr)}/diffs?per_page=1`);
     ensureOk(res, `${mrBase(pr)}/diffs`);
-    const total = Number(res.headers.get("x-total"));
-    return Number.isInteger(total) && total >= 0 ? total : parseCount(changesCount);
+    const header = res.headers.get("x-total");
+    const total = Number(header);
+    return header !== null && Number.isInteger(total) && total >= 0 ? total : parseCount(changesCount);
   };
   const resetApprovalsOnPush = async () => {
     try {
@@ -29592,9 +29593,14 @@ var runEvaluate = async (argv) => {
       base: { type: "string", default: "origin/main" },
       policy: { type: "string", default: ".merge-risk.yml" },
       workflow: { type: "string", default: ".github/workflows/merge-risk.{yml,yaml}" },
-      json: { type: "boolean", default: false }
+      json: { type: "boolean", default: false },
+      help: { type: "boolean", default: false }
     }
   });
+  if (values.help) {
+    console.log(EVALUATE_USAGE);
+    return;
+  }
   const evaluation = await evaluateLocally({
     git: createGitPort(process.cwd()),
     base: values.base,
