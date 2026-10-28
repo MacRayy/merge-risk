@@ -36,14 +36,21 @@ describe('toGitLabChangedFile', () => {
     expect(toGitLabChangedFile(diff({ diff: '' })).addedLines).toBeUndefined()
   })
 
-  it('treats an empty diff with a structural reason (rename / new / mode) as nothing added', () => {
+  it('treats an empty diff with a structural reason (rename / delete / mode) as nothing added', () => {
     expect(
       toGitLabChangedFile(diff({ diff: '', renamed_file: true, old_path: 'src/b.ts' })).addedLines,
     ).toEqual([])
-    expect(toGitLabChangedFile(diff({ diff: '', new_file: true })).addedLines).toEqual([])
+    expect(toGitLabChangedFile(diff({ diff: '', deleted_file: true })).addedLines).toEqual([])
     expect(
       toGitLabChangedFile(diff({ diff: '', a_mode: '100644', b_mode: '100755' })).addedLines,
     ).toEqual([])
+  })
+
+  it('fails closed: a new file with a withheld (empty) diff is unreadable, not empty', () => {
+    expect(
+      toGitLabChangedFile(diff({ diff: '', new_file: true, a_mode: '0', b_mode: '100644' }))
+        .addedLines,
+    ).toBeUndefined()
   })
 
   it('carries the previous path only for a rename', () => {
@@ -67,7 +74,6 @@ const mr = {
   diff_refs: { base_sha: 'base', head_sha: 'head' },
   changes_count: '3',
   labels: ['frontend'],
-  reviewers: [{ username: 'zsolt', state: 'requested_changes' }],
 }
 
 const stubFetch = (route: (url: string, method: string) => Route): void => {
@@ -102,7 +108,7 @@ describe('createGitLabPort', () => {
     })
   })
 
-  it('maps approvals to head-stamped approvals and requested-changes to blockers', async () => {
+  it('maps each current approval to a head-stamped approval review', async () => {
     stubFetch((url) => {
       if (url.includes('/approvals') && url.includes('/merge_requests/'))
         return { body: { approved_by: [{ user: { username: 'alice' } }] } }
@@ -112,13 +118,6 @@ describe('createGitLabPort', () => {
     const reviews = await createGitLabPort(config()).listReviews(PR)
     expect(reviews).toEqual([
       { reviewer: 'alice', isBot: false, hasWriteAccess: true, state: 'approved', commit: 'head' },
-      {
-        reviewer: 'zsolt',
-        isBot: false,
-        hasWriteAccess: true,
-        state: 'changes-requested',
-        commit: 'head',
-      },
     ])
   })
 
