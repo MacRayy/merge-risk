@@ -1,7 +1,7 @@
 import type { Review, ReviewState } from '../core/gate.ts'
+import type { ChangeRef, ReviewPort } from '../core/review-port.ts'
 import type { ChangedFile } from '../core/types.ts'
 import { summarizeHunks } from '../core/unified-diff.ts'
-import type { GitHubPort, PullRequestRef } from './port.ts'
 
 import type { getOctokit } from '@actions/github'
 
@@ -87,13 +87,13 @@ export const toReviews = (reviews: readonly RawReview[], writers: ReadonlySet<st
     ]
   })
 
-export const createGitHubPort = (octokit: Octokit): GitHubPort => {
-  const issue = (pr: PullRequestRef): { owner: string; repo: string; issue_number: number } => ({
+export const createGitHubPort = (octokit: Octokit): ReviewPort => {
+  const issue = (pr: ChangeRef): { owner: string; repo: string; issue_number: number } => ({
     owner: pr.owner,
     repo: pr.repo,
     issue_number: pr.number,
   })
-  const pull = (pr: PullRequestRef): { owner: string; repo: string; pull_number: number } => ({
+  const pull = (pr: ChangeRef): { owner: string; repo: string; pull_number: number } => ({
     owner: pr.owner,
     repo: pr.repo,
     pull_number: pr.number,

@@ -1,17 +1,17 @@
-import { assessRisk } from '../core/assess.ts'
-import { decideGate, type GateDecision } from '../core/gate.ts'
-import { renderReport, REPORT_MARKER } from '../core/report.ts'
-import type { Tier } from '../core/tier.ts'
-import type { Policy } from '../core/types.ts'
 import { parsePolicy, PolicyError } from '../policy/parse-policy.ts'
-import type { GitHubPort, PullRequest, PullRequestRef } from './port.ts'
+import { assessRisk } from './assess.ts'
+import { decideGate, type GateDecision } from './gate.ts'
+import { renderReport, REPORT_MARKER } from './report.ts'
+import type { ChangeRef, PullRequest, ReviewPort } from './review-port.ts'
+import type { Tier } from './tier.ts'
+import type { Policy } from './types.ts'
 
 export const LABEL_PREFIX = 'merge-risk:'
 
 const MAX_STATUS_DESCRIPTION = 140
 
-export type GitHubGateConfig = {
-  port: GitHubPort
+export type GateConfig = {
+  port: ReviewPort
   policyPath: string
   // The workflow file running the gate; editing it is as sensitive as editing the policy.
   workflowPath: string | undefined
@@ -25,23 +25,18 @@ export type GateRun = {
   superseded: boolean
 }
 
-export type GitHubGate = {
-  run: (pr: PullRequestRef) => Promise<GateRun>
+export type Gate = {
+  run: (pr: ChangeRef) => Promise<GateRun>
 }
 
 const truncate = (text: string): string =>
   text.length > MAX_STATUS_DESCRIPTION ? `${text.slice(0, MAX_STATUS_DESCRIPTION - 1)}…` : text
 
-export const createGitHubGate = ({
-  port,
-  policyPath,
-  workflowPath,
-  statusContext,
-}: GitHubGateConfig): GitHubGate => {
+export const createGate = ({ port, policyPath, workflowPath, statusContext }: GateConfig): Gate => {
   const protectedPaths = workflowPath === undefined ? [policyPath] : [policyPath, workflowPath]
 
   // Read from the base commit, never the head, so a PR can't loosen the policy that judges it.
-  const loadPolicy = async (pr: PullRequestRef, pull: PullRequest): Promise<Policy> => {
+  const loadPolicy = async (pr: ChangeRef, pull: PullRequest): Promise<Policy> => {
     const text = await port.readFile(pr, policyPath, pull.baseSha)
     if (text === undefined) {
       throw new PolicyError(`No ${policyPath} on the base branch (${pull.baseSha})`)
@@ -49,7 +44,7 @@ export const createGitHubGate = ({
     return parsePolicy(text)
   }
 
-  const syncLabel = async (pr: PullRequestRef, tier: Tier): Promise<void> => {
+  const syncLabel = async (pr: ChangeRef, tier: Tier): Promise<void> => {
     const wanted = `${LABEL_PREFIX}${tier}`
     const labels = await port.listLabels(pr)
     const stale = labels.filter((label) => label.startsWith(LABEL_PREFIX) && label !== wanted)
@@ -61,7 +56,7 @@ export const createGitHubGate = ({
     if (!labels.includes(wanted)) await port.addLabel(pr, wanted)
   }
 
-  const upsertReport = async (pr: PullRequestRef, body: string): Promise<void> => {
+  const upsertReport = async (pr: ChangeRef, body: string): Promise<void> => {
     const comments = await port.listComments(pr)
     // Only a bot's comment counts, so a person quoting the marker can't take over the report.
     // That's also why the action supports GITHUB_TOKEN and app tokens but not personal tokens.
@@ -72,7 +67,7 @@ export const createGitHubGate = ({
     else if (existing.body !== body) await port.updateComment(pr, existing.id, body)
   }
 
-  const evaluate = async (pr: PullRequestRef, pull: PullRequest): Promise<GateRun> => {
+  const evaluate = async (pr: ChangeRef, pull: PullRequest): Promise<GateRun> => {
     const [policy, files, reviews] = await Promise.all([
       loadPolicy(pr, pull),
       port.listFiles(pr),
