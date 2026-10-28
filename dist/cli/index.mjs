@@ -29351,9 +29351,9 @@ var createGitLabPort = ({
   const resetApprovalsOnPush = async () => {
     try {
       return (await getJson(`${projectBase}/approvals`, projectApprovalsSchema)).reset_approvals_on_push;
-    } catch {
+    } catch (error62) {
       warn(
-        "merge-risk: could not read project approval settings; assuming approvals are not reset on push."
+        `merge-risk: could not read project approval settings (${error62 instanceof Error ? error62.message : String(error62)}); assuming approvals are not reset on push.`
       );
       return false;
     }
@@ -29368,7 +29368,11 @@ var createGitLabPort = ({
   };
   const postBestEffort = async (path, body, what) => {
     const res = await request("POST", path, body).catch(() => void 0);
-    if (res?.ok !== true) warn(`merge-risk: could not post ${what}`);
+    if (res?.ok !== true) {
+      warn(
+        `merge-risk: could not post ${what} (${res === void 0 ? "network error" : `GitLab ${res.status}`})`
+      );
+    }
   };
   return {
     getPullRequest: async (pr) => {

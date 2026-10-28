@@ -104,9 +104,10 @@ export const createGitLabPort = ({
     try {
       return (await getJson(`${projectBase}/approvals`, projectApprovalsSchema))
         .reset_approvals_on_push
-    } catch {
+    } catch (error) {
+      // 404 on this endpoint usually means the tier has no MR-approval settings (Premium+ feature).
       warn(
-        'merge-risk: could not read project approval settings; assuming approvals are not reset on push.',
+        `merge-risk: could not read project approval settings (${error instanceof Error ? error.message : String(error)}); assuming approvals are not reset on push.`,
       )
       return false
     }
@@ -132,7 +133,11 @@ export const createGitLabPort = ({
     what: string,
   ): Promise<void> => {
     const res = await request('POST', path, body).catch(() => undefined)
-    if (res?.ok !== true) warn(`merge-risk: could not post ${what}`)
+    if (res?.ok !== true) {
+      warn(
+        `merge-risk: could not post ${what} (${res === undefined ? 'network error' : `GitLab ${res.status}`})`,
+      )
+    }
   }
 
   return {
