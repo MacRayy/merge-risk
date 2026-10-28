@@ -168,6 +168,11 @@ file (`.merge-risk.yml`) and its format are identical; the protected "workflow" 
    ```yaml
    merge-risk:
      image: node:24-alpine
+     variables:
+       # The status name must differ from this job's name: GitLab already publishes a commit status
+       # named after the job, so posting another `merge-risk` status fails with 400 "name has already
+       # been taken". Name the gate's verdict status distinctly (or name the job something else).
+       MERGE_RISK_STATUS_CONTEXT: merge-risk-verdict
      rules:
        - if: $CI_PIPELINE_SOURCE == "merge_request_event"
      script:
@@ -176,8 +181,9 @@ file (`.merge-risk.yml`) and its format are identical; the protected "workflow" 
 
 4. Turn the job into a gate: **Settings → Merge requests → "Pipelines must succeed"** (and protect
    the target branch). The job exits non-zero until the tier's review requirement is met, so the
-   merge stays blocked. On **Ultimate**, add a **Status check** named `merge-risk` and the gate also
-   posts to it as a required, natively re-evaluated check.
+   merge stays blocked. On **Ultimate**, add a **Status check** named to match
+   `MERGE_RISK_STATUS_CONTEXT` and the gate also posts to it as a required, natively re-evaluated
+   check.
 5. Enable **Settings → Merge requests → "Remove all approvals when commits are added"** so an
    approval only counts for the commit it was given on (GitLab's approvals API carries no per-commit
    data; the gate warns on each run while this is off).
@@ -193,6 +199,13 @@ override the policy path and status name.
 - **Approval counts, not rules, come from the gate.** merge-risk reads the approvals API (available
   on every tier) and enforces the per-tier count itself, so it works without GitLab's paid approval
   rules.
+- **The status name must differ from the job name.** GitLab publishes a commit status named after
+  the CI job, so if the job is `merge-risk` the gate's own `merge-risk` status collides (400 "name
+  has already been taken"). Set `MERGE_RISK_STATUS_CONTEXT` distinctly, as the setup snippet does.
+- **Reading approval settings needs Maintainer.** `GET /projects/:id/approvals` (used to check
+  reset-on-push) is Maintainer-only and Premium+; with a Developer token it 403s and the gate falls
+  back to a per-run warning — which is why enabling reset-on-push is a setup step, not something it
+  reads.
 - **A "request changes" review doesn't block (yet).** The GitLab REST MR response carries no
   per-reviewer verdict, so the gate relies on the approval count. Use GitLab's own blocking reviews,
   or a protected branch, if you need a requested-changes hard stop.
