@@ -1,6 +1,6 @@
 import type { Review } from '../core/gate.ts'
+import type { CommitStatus, IssueComment, PullRequest, ReviewPort } from '../core/review-port.ts'
 import type { ChangedFile } from '../core/types.ts'
-import type { CommitStatus, GitHubPort, IssueComment, PullRequest } from './port.ts'
 
 export type FakeGitHubState = {
   pull: PullRequest
@@ -17,7 +17,7 @@ export type FakeGitHubState = {
 }
 
 export type FakeGitHub = {
-  port: GitHubPort
+  port: ReviewPort
   state: FakeGitHubState
 }
 
@@ -34,7 +34,7 @@ export const createFakeGitHub = (initial: Partial<FakeGitHubState> = {}): FakeGi
     statusError: undefined,
     ...initial,
   }
-  const port: GitHubPort = {
+  const port: ReviewPort = {
     getPullRequest: async () => ({ ...state.pull }),
     listFiles: async () => {
       const files = [...state.files]

@@ -1,5 +1,5 @@
+import { createGate } from '../core/run-gate.ts'
 import { createGitHubPort } from './github-port.ts'
-import { createGitHubGate } from './run-gate.ts'
 import { pullRequestsAtCommit, type Trigger, triggerFromEvent } from './trigger.ts'
 import { workflowPathFromRef } from './workflow-path.ts'
 
@@ -23,7 +23,7 @@ const pullRequestNumbers = async (octokit: Octokit, trigger: Trigger): Promise<n
 const main = async (): Promise<void> => {
   const trigger = triggerFromEvent(context.eventName, context.payload)
   const octokit = getOctokit(core.getInput('github-token', { required: true }))
-  const gate = createGitHubGate({
+  const gate = createGate({
     port: createGitHubPort(octokit),
     policyPath: core.getInput('policy-path', { required: true }),
     workflowPath: workflowPathFromRef(process.env['GITHUB_WORKFLOW_REF']),

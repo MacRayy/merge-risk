@@ -1,7 +1,7 @@
-import { REPORT_MARKER } from '../core/report.ts'
+import { createFakeGitHub, type FakeGitHubState } from '../github/fake-github-port.ts'
 import { changedFile } from '../test-support/fixtures.ts'
-import { createFakeGitHub, type FakeGitHubState } from './fake-github-port.ts'
-import { createGitHubGate } from './run-gate.ts'
+import { REPORT_MARKER } from './report.ts'
+import { createGate } from './run-gate.ts'
 
 import { describe, expect, it } from 'vitest'
 
@@ -22,13 +22,13 @@ zones:
 const setUp = (
   initial: Partial<FakeGitHubState> = {},
 ): ReturnType<typeof createFakeGitHub> & {
-  run: () => ReturnType<ReturnType<typeof createGitHubGate>['run']>
+  run: () => ReturnType<ReturnType<typeof createGate>['run']>
 } => {
   const fake = createFakeGitHub({
     contents: { 'base-sha': { '.merge-risk.yml': policyYaml(1) } },
     ...initial,
   })
-  const gate = createGitHubGate({
+  const gate = createGate({
     port: fake.port,
     policyPath: '.merge-risk.yml',
     workflowPath: '.github/workflows/merge-risk.yml',
@@ -37,7 +37,7 @@ const setUp = (
   return { ...fake, run: async () => await gate.run(PR) }
 }
 
-describe('createGitHubGate', () => {
+describe('createGate', () => {
   it('reports a safe change as mergeable on the head commit', async () => {
     const { run, state } = setUp({ files: [changedFile('docs/a.md')] })
     await expect(run()).resolves.toMatchObject({
