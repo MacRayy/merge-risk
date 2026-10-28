@@ -154,6 +154,46 @@ onto someone else's PR can still approve it.
   caller, not the reusable workflow that holds the gate.
 - **The gate checks that a review happened, not how deep it went.**
 
+## GitLab setup
+
+The same engine gates GitLab merge requests from a CI job — no Action, no extra service. The policy
+file (`.merge-risk.yml`) and its format are identical; the protected "workflow" file is
+`.gitlab-ci.yml`.
+
+1. Add `.merge-risk.yml` to the default branch (same schema as above).
+2. Create a **project or group access token** with the Developer role and API scope, and store it as
+   a masked CI/CD variable named `MERGE_RISK_TOKEN`.
+3. Add a merge-request job to `.gitlab-ci.yml`:
+
+   ```yaml
+   merge-risk:
+     image: node:24-alpine
+     rules:
+       - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+     script:
+       - npx @attrectodev/merge-risk@v0 gitlab-gate
+   ```
+
+4. Turn the job into a gate: **Settings → Merge requests → "Pipelines must succeed"** (and protect
+   the target branch). The job exits non-zero until the tier's review requirement is met, so the
+   merge stays blocked. On **Ultimate**, add a **Status check** named `merge-risk` and the gate also
+   posts to it as a required, natively re-evaluated check.
+5. Enable **Settings → Merge requests → "Remove all approvals when commits are added"** so an
+   approval only counts for the commit it was given on (GitLab's approvals API carries no per-commit
+   data; the gate warns on each run while this is off).
+
+The job reads the merge request from GitLab's predefined CI variables (`CI_API_V4_URL`,
+`CI_PROJECT_ID`, `CI_MERGE_REQUEST_IID`). `MERGE_RISK_POLICY` and `MERGE_RISK_STATUS_CONTEXT`
+override the policy path and status name.
+
+### Known limits (GitLab)
+
+- **An approval doesn't re-run the pipeline.** Until a webhook listener is added, a `pending` job
+  stays red until it's retried after the approval lands — re-run the job (or push) to turn it green.
+- **Approval counts, not rules, come from the gate.** merge-risk reads the approvals API (available
+  on every tier) and enforces the per-tier count itself, so it works without GitLab's paid approval
+  rules.
+
 ## Local preview
 
 ```sh
