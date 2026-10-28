@@ -1,37 +1,26 @@
-import { evaluateLocally } from './evaluate.ts'
-import { createGitPort } from './git-port.ts'
-import { renderText } from './render-text.ts'
+import { runGitLabGate } from '../gitlab/main.ts'
+import { EVALUATE_USAGE, runEvaluate } from './evaluate-command.ts'
 
-import { parseArgs } from 'node:util'
+const USAGE = `Usage: merge-risk <command> [options]
 
-const USAGE = `Usage: merge-risk evaluate [--base <ref>] [--policy <path>] [--workflow <glob>] [--json]
+Commands:
+  evaluate       Score the current branch's committed changes locally (preview).
+  gitlab-gate    Run the gate on a GitLab merge request from inside a CI job (reads CI_* env).
 
-Scores the current branch's committed changes against <ref> (default: origin/main).
---workflow names the gate's workflow file (default: .github/workflows/merge-risk.{yml,yaml}).`
+${EVALUATE_USAGE}`
 
 const main = async (): Promise<void> => {
-  const { positionals, values } = parseArgs({
-    allowPositionals: true,
-    options: {
-      base: { type: 'string', default: 'origin/main' },
-      policy: { type: 'string', default: '.merge-risk.yml' },
-      workflow: { type: 'string', default: '.github/workflows/merge-risk.{yml,yaml}' },
-      json: { type: 'boolean', default: false },
-      help: { type: 'boolean', default: false },
-    },
-  })
-  if (values.help || positionals[0] !== 'evaluate') {
-    console.log(USAGE)
-    process.exitCode = values.help ? 0 : 1
+  const command = process.argv[2]
+  if (command === 'gitlab-gate') {
+    await runGitLabGate()
     return
   }
-  const evaluation = await evaluateLocally({
-    git: createGitPort(process.cwd()),
-    base: values.base,
-    policyPath: values.policy,
-    workflowPath: values.workflow,
-  })
-  console.log(values.json ? JSON.stringify(evaluation.assessment, null, 2) : renderText(evaluation))
+  if (command === 'evaluate') {
+    await runEvaluate(process.argv.slice(3))
+    return
+  }
+  console.log(USAGE)
+  process.exitCode = command === undefined || command === 'help' || command === '--help' ? 0 : 1
 }
 
 main().catch((error: unknown) => {
