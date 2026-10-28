@@ -29369,9 +29369,8 @@ var createGitLabPort = ({
   const postBestEffort = async (path, body, what) => {
     const res = await request("POST", path, body).catch(() => void 0);
     if (res?.ok !== true) {
-      warn(
-        `merge-risk: could not post ${what} (${res === void 0 ? "network error" : `GitLab ${res.status}`})`
-      );
+      const detail = res === void 0 ? "network error" : `GitLab ${res.status}: ${(await res.text().catch(() => "")).slice(0, 300)}`;
+      warn(`merge-risk: could not post ${what} (${detail})`);
     }
   };
   return {
