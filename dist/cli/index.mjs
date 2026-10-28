@@ -29365,6 +29365,10 @@ var createGitLabPort = ({
       return void 0;
     }
   };
+  const postBestEffort = async (path, body, what) => {
+    const res = await request("POST", path, body).catch(() => void 0);
+    if (res?.ok !== true) warn(`merge-risk: could not post ${what}`);
+  };
   return {
     getPullRequest: async (pr) => {
       const mr = await getJson(mrBase(pr), mrSchema);
@@ -29389,7 +29393,7 @@ var createGitLabPort = ({
         getJson(`${mrBase(pr)}/approvals`, approvalsSchema),
         resetApprovalsOnPush()
       ]);
-      if (!resetOnPush) {
+      if (!resetOnPush && approvals.approved_by.length > 0) {
         warn(
           'merge-risk: "Remove all approvals when commits are added" is OFF; an approval given before a later push still counts. Enable it in Settings \u2192 Merge requests.'
         );
@@ -29430,22 +29434,26 @@ var createGitLabPort = ({
       );
     },
     setStatus: async (pr, status) => {
-      await request("POST", `${projectBase}/statuses/${status.sha}`, {
-        state: STATUS_STATE[status.state],
-        name: status.context,
-        description: status.description
-      }).catch(() => {
-        warn(`merge-risk: could not post the commit status for ${status.sha}`);
-      });
+      await postBestEffort(
+        `${projectBase}/statuses/${status.sha}`,
+        {
+          state: STATUS_STATE[status.state],
+          name: status.context,
+          description: status.description
+        },
+        `the commit status for ${status.sha}`
+      );
       const checkId = await readExternalCheckId(status.context);
       if (checkId !== void 0) {
-        await request("POST", `${mrBase(pr)}/status_check_responses`, {
-          sha: status.sha,
-          external_status_check_id: checkId,
-          status: CHECK_STATUS[status.state]
-        }).catch(() => {
-          warn(`merge-risk: could not post the external status check for ${status.sha}`);
-        });
+        await postBestEffort(
+          `${mrBase(pr)}/status_check_responses`,
+          {
+            sha: status.sha,
+            external_status_check_id: checkId,
+            status: CHECK_STATUS[status.state]
+          },
+          `the external status check for ${status.sha}`
+        );
       }
     }
   };
