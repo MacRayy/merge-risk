@@ -2,7 +2,6 @@ import type { ChangeRef, IssueComment, ReviewPort } from '../core/review-port.ts
 import {
   approvalReview,
   approvalsSchema,
-  blockerReview,
   CHECK_STATUS,
   diffSchema,
   externalCheckSchema,
@@ -77,8 +76,10 @@ export const createGitLabPort = ({
       ensureOk(res, url)
       const body: unknown = await res.json()
       const items = z.array(schema).parse(body)
-      const next = res.headers.get('x-next-page')
-      return next === null || next === '' ? items : [...items, ...(await fetchPage(Number(next)))]
+      // GitLab's list endpoints use offset pagination (a numeric X-Next-Page, empty on the last page).
+      // Require a strictly larger integer so a missing or non-numeric cursor stops rather than loops.
+      const next = Number(res.headers.get('x-next-page'))
+      return Number.isInteger(next) && next > page ? [...items, ...(await fetchPage(next))] : items
     }
     return await fetchPage(1)
   }
@@ -110,7 +111,9 @@ export const createGitLabPort = ({
   const readExternalCheckId = async (context: string): Promise<number | undefined> => {
     try {
       const checks = await paginate(`${projectBase}/external_status_checks`, externalCheckSchema)
-      return (checks.find((check) => check.name === context) ?? checks[0])?.id
+      // Only post against a check named for this gate; never guess, or a merge-risk verdict could
+      // satisfy or block an unrelated team's required check.
+      return checks.find((check) => check.name === context)?.id
     } catch {
       // No external status checks (not Ultimate / no permission): the commit status + job exit code gate.
       return undefined
@@ -148,12 +151,7 @@ export const createGitLabPort = ({
         )
       }
       const headCommit = mr.diff_refs.head_sha
-      return [
-        ...approvals.approved_by.map((entry) => approvalReview(entry.user.username, headCommit)),
-        ...mr.reviewers
-          .filter((reviewer) => reviewer.state === 'requested_changes')
-          .map((reviewer) => blockerReview(reviewer.username, headCommit)),
-      ]
+      return approvals.approved_by.map((entry) => approvalReview(entry.user.username, headCommit))
     },
     listLabels: async (pr) => (await getJson(mrBase(pr), mrSchema)).labels,
     addLabel: async (pr, label) => {
@@ -193,7 +191,9 @@ export const createGitLabPort = ({
         state: STATUS_STATE[status.state],
         name: status.context,
         description: status.description,
-      }).catch(() => undefined)
+      }).catch(() => {
+        warn(`merge-risk: could not post the commit status for ${status.sha}`)
+      })
       // 2) External status check — the real, required merge gate on Ultimate; skipped silently elsewhere.
       const checkId = await readExternalCheckId(status.context)
       if (checkId !== undefined) {
@@ -201,7 +201,9 @@ export const createGitLabPort = ({
           sha: status.sha,
           external_status_check_id: checkId,
           status: CHECK_STATUS[status.state],
-        }).catch(() => undefined)
+        }).catch(() => {
+          warn(`merge-risk: could not post the external status check for ${status.sha}`)
+        })
       }
     },
   }

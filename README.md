@@ -193,6 +193,9 @@ override the policy path and status name.
 - **Approval counts, not rules, come from the gate.** merge-risk reads the approvals API (available
   on every tier) and enforces the per-tier count itself, so it works without GitLab's paid approval
   rules.
+- **A "request changes" review doesn't block (yet).** The GitLab REST MR response carries no
+  per-reviewer verdict, so the gate relies on the approval count. Use GitLab's own blocking reviews,
+  or a protected branch, if you need a requested-changes hard stop.
 
 ## Local preview
 

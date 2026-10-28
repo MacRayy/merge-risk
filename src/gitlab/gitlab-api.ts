@@ -12,7 +12,6 @@ export const mrSchema = z.object({
   diff_refs: z.object({ base_sha: z.string(), head_sha: z.string() }),
   changes_count: z.string().optional(),
   labels: z.array(z.string()).default([]),
-  reviewers: z.array(z.object({ username: z.string(), state: z.string().optional() })).default([]),
 })
 
 export const approvalsSchema = z.object({
@@ -60,8 +59,11 @@ const diffSummary = (entry: GitLabDiff): DiffSummary => {
   if (entry.diff.startsWith(BINARY_MARKER))
     return { addedLines: undefined, additions: 0, deletions: 0 }
   if (entry.diff === '') {
+    // A rename, delete, or mode-only change genuinely adds nothing. A *new* file with an empty diff is
+    // GitLab withholding a too-large patch (new_file sets a_mode 0 → b_mode, so guard new_file out),
+    // which must fail closed like a binary: unreadable → very-risky.
     const explainable =
-      entry.new_file || entry.renamed_file || entry.deleted_file || entry.a_mode !== entry.b_mode
+      entry.renamed_file || entry.deleted_file || (entry.a_mode !== entry.b_mode && !entry.new_file)
     return explainable
       ? { addedLines: [], additions: 0, deletions: 0 }
       : { addedLines: undefined, additions: 0, deletions: 0 }
@@ -95,13 +97,11 @@ export const approvalReview = (username: string, headCommit: string): Review => 
   commit: headCommit,
 })
 
-export const blockerReview = (username: string, headCommit: string): Review => ({
-  reviewer: username,
-  isBot: false,
-  hasWriteAccess: true,
-  state: 'changes-requested',
-  commit: headCommit,
-})
+// NOTE: a "request changes" blocker is intentionally not mapped. GitLab's REST MR response has no
+// per-reviewer review verdict — `reviewers[].state` is the account status (active/blocked), not
+// REQUESTED_CHANGES (that lives only in GraphQL). Rather than key a hard block on a field that never
+// carries the verdict (which would silently never block), the gate relies on the approval count; a
+// changes-requested block can be added later via the GraphQL reviewState.
 
 export const STATUS_STATE: Readonly<Record<CommitStatus['state'], string>> = {
   success: 'success',

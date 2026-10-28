@@ -29226,8 +29226,7 @@ var mrSchema = external_exports.object({
   author: userSchema,
   diff_refs: external_exports.object({ base_sha: external_exports.string(), head_sha: external_exports.string() }),
   changes_count: external_exports.string().optional(),
-  labels: external_exports.array(external_exports.string()).default([]),
-  reviewers: external_exports.array(external_exports.object({ username: external_exports.string(), state: external_exports.string().optional() })).default([])
+  labels: external_exports.array(external_exports.string()).default([])
 });
 var approvalsSchema = external_exports.object({
   approved_by: external_exports.array(external_exports.object({ user: userSchema })).default([])
@@ -29257,7 +29256,7 @@ var diffSummary = (entry) => {
   if (entry.diff.startsWith(BINARY_MARKER))
     return { addedLines: void 0, additions: 0, deletions: 0 };
   if (entry.diff === "") {
-    const explainable = entry.new_file || entry.renamed_file || entry.deleted_file || entry.a_mode !== entry.b_mode;
+    const explainable = entry.renamed_file || entry.deleted_file || entry.a_mode !== entry.b_mode && !entry.new_file;
     return explainable ? { addedLines: [], additions: 0, deletions: 0 } : { addedLines: void 0, additions: 0, deletions: 0 };
   }
   const hunks = summarizeHunks(entry.diff);
@@ -29282,13 +29281,6 @@ var approvalReview = (username, headCommit) => ({
   isBot: false,
   hasWriteAccess: true,
   state: "approved",
-  commit: headCommit
-});
-var blockerReview = (username, headCommit) => ({
-  reviewer: username,
-  isBot: false,
-  hasWriteAccess: true,
-  state: "changes-requested",
   commit: headCommit
 });
 var STATUS_STATE = {
@@ -29344,8 +29336,8 @@ var createGitLabPort = ({
       ensureOk(res, url2);
       const body = await res.json();
       const items = external_exports.array(schema).parse(body);
-      const next = res.headers.get("x-next-page");
-      return next === null || next === "" ? items : [...items, ...await fetchPage(Number(next))];
+      const next = Number(res.headers.get("x-next-page"));
+      return Number.isInteger(next) && next > page ? [...items, ...await fetchPage(next)] : items;
     };
     return await fetchPage(1);
   };
@@ -29368,7 +29360,7 @@ var createGitLabPort = ({
   const readExternalCheckId = async (context) => {
     try {
       const checks = await paginate(`${projectBase}/external_status_checks`, externalCheckSchema);
-      return (checks.find((check2) => check2.name === context) ?? checks[0])?.id;
+      return checks.find((check2) => check2.name === context)?.id;
     } catch {
       return void 0;
     }
@@ -29403,10 +29395,7 @@ var createGitLabPort = ({
         );
       }
       const headCommit = mr.diff_refs.head_sha;
-      return [
-        ...approvals.approved_by.map((entry) => approvalReview(entry.user.username, headCommit)),
-        ...mr.reviewers.filter((reviewer) => reviewer.state === "requested_changes").map((reviewer) => blockerReview(reviewer.username, headCommit))
-      ];
+      return approvals.approved_by.map((entry) => approvalReview(entry.user.username, headCommit));
     },
     listLabels: async (pr) => (await getJson(mrBase(pr), mrSchema)).labels,
     addLabel: async (pr, label) => {
@@ -29445,14 +29434,18 @@ var createGitLabPort = ({
         state: STATUS_STATE[status.state],
         name: status.context,
         description: status.description
-      }).catch(() => void 0);
+      }).catch(() => {
+        warn(`merge-risk: could not post the commit status for ${status.sha}`);
+      });
       const checkId = await readExternalCheckId(status.context);
       if (checkId !== void 0) {
         await request("POST", `${mrBase(pr)}/status_check_responses`, {
           sha: status.sha,
           external_status_check_id: checkId,
           status: CHECK_STATUS[status.state]
-        }).catch(() => void 0);
+        }).catch(() => {
+          warn(`merge-risk: could not post the external status check for ${status.sha}`);
+        });
       }
     }
   };
