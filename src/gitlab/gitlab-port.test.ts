@@ -125,7 +125,7 @@ describe('createGitLabPort', () => {
     const warn = vi.fn()
     stubFetch((url) => {
       if (url.includes('/merge_requests/') && url.includes('/approvals'))
-        return { body: { approved_by: [] } }
+        return { body: { approved_by: [{ user: { username: 'alice' } }] } }
       if (url.includes('/projects/42/approvals'))
         return { body: { reset_approvals_on_push: false } }
       return { body: mr }

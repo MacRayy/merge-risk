@@ -196,6 +196,9 @@ override the policy path and status name.
 - **A "request changes" review doesn't block (yet).** The GitLab REST MR response carries no
   per-reviewer verdict, so the gate relies on the approval count. Use GitLab's own blocking reviews,
   or a protected branch, if you need a requested-changes hard stop.
+- **A brand-new empty file scores very-risky.** GitLab withholds the diff of a too-large new file,
+  which is indistinguishable from a genuinely empty new file (`.gitkeep`), so both are treated as
+  unreadable — the safe direction, but it over-reports the rare empty add.
 
 ## Local preview
 

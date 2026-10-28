@@ -120,6 +120,17 @@ export const createGitLabPort = ({
     }
   }
 
+  // Post a status without failing the run, but warn on BOTH a transport error and an HTTP-error
+  // response (fetch resolves a 4xx/5xx, so a lost-scope 403 would otherwise be swallowed silently).
+  const postBestEffort = async (
+    path: string,
+    body: Readonly<Record<string, unknown>>,
+    what: string,
+  ): Promise<void> => {
+    const res = await request('POST', path, body).catch(() => undefined)
+    if (res?.ok !== true) warn(`merge-risk: could not post ${what}`)
+  }
+
   return {
     getPullRequest: async (pr) => {
       const mr = await getJson(mrBase(pr), mrSchema)
@@ -145,7 +156,7 @@ export const createGitLabPort = ({
         getJson(`${mrBase(pr)}/approvals`, approvalsSchema),
         resetApprovalsOnPush(),
       ])
-      if (!resetOnPush) {
+      if (!resetOnPush && approvals.approved_by.length > 0) {
         warn(
           'merge-risk: "Remove all approvals when commits are added" is OFF; an approval given before a later push still counts. Enable it in Settings → Merge requests.',
         )
@@ -187,23 +198,27 @@ export const createGitLabPort = ({
     },
     setStatus: async (pr, status) => {
       // 1) Commit status — visible on any tier; best-effort (not every project surfaces it as a gate).
-      await request('POST', `${projectBase}/statuses/${status.sha}`, {
-        state: STATUS_STATE[status.state],
-        name: status.context,
-        description: status.description,
-      }).catch(() => {
-        warn(`merge-risk: could not post the commit status for ${status.sha}`)
-      })
+      await postBestEffort(
+        `${projectBase}/statuses/${status.sha}`,
+        {
+          state: STATUS_STATE[status.state],
+          name: status.context,
+          description: status.description,
+        },
+        `the commit status for ${status.sha}`,
+      )
       // 2) External status check — the real, required merge gate on Ultimate; skipped silently elsewhere.
       const checkId = await readExternalCheckId(status.context)
       if (checkId !== undefined) {
-        await request('POST', `${mrBase(pr)}/status_check_responses`, {
-          sha: status.sha,
-          external_status_check_id: checkId,
-          status: CHECK_STATUS[status.state],
-        }).catch(() => {
-          warn(`merge-risk: could not post the external status check for ${status.sha}`)
-        })
+        await postBestEffort(
+          `${mrBase(pr)}/status_check_responses`,
+          {
+            sha: status.sha,
+            external_status_check_id: checkId,
+            status: CHECK_STATUS[status.state],
+          },
+          `the external status check for ${status.sha}`,
+        )
       }
     },
   }
