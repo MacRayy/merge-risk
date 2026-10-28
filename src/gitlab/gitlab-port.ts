@@ -134,9 +134,11 @@ export const createGitLabPort = ({
   ): Promise<void> => {
     const res = await request('POST', path, body).catch(() => undefined)
     if (res?.ok !== true) {
-      warn(
-        `merge-risk: could not post ${what} (${res === undefined ? 'network error' : `GitLab ${res.status}`})`,
-      )
+      const detail =
+        res === undefined
+          ? 'network error'
+          : `GitLab ${res.status}: ${(await res.text().catch(() => '')).slice(0, 300)}`
+      warn(`merge-risk: could not post ${what} (${detail})`)
     }
   }
 
