@@ -5,11 +5,14 @@ import {
   CHECK_STATUS,
   diffSchema,
   externalCheckSchema,
+  isFreshApproval,
+  latestApprovalTimes,
+  latestPushTime,
   mrSchema,
   noteSchema,
-  projectApprovalsSchema,
   STATUS_STATE,
   toGitLabChangedFile,
+  versionSchema,
 } from './gitlab-api.ts'
 
 import { z } from 'zod'
@@ -93,6 +96,16 @@ export const createGitLabPort = ({
     return await pending
   }
 
+  // listReviews (approval timing) + listComments both page the notes; memoise so one run pages them once.
+  const notesCache = new Map<number, Promise<Array<z.infer<typeof noteSchema>>>>()
+  const getNotes = async (pr: ChangeRef): Promise<Array<z.infer<typeof noteSchema>>> => {
+    const cached = notesCache.get(pr.number)
+    if (cached !== undefined) return await cached
+    const pending = paginate(`${mrBase(pr)}/notes`, noteSchema)
+    notesCache.set(pr.number, pending)
+    return await pending
+  }
+
   const changedFileCount = async (
     pr: ChangeRef,
     changesCount: string | null | undefined,
@@ -105,19 +118,6 @@ export const createGitLabPort = ({
     return header !== null && Number.isInteger(total) && total >= 0
       ? total
       : parseCount(changesCount)
-  }
-
-  const resetApprovalsOnPush = async (): Promise<boolean> => {
-    try {
-      return (await getJson(`${projectBase}/approvals`, projectApprovalsSchema))
-        .reset_approvals_on_push
-    } catch (error) {
-      // 404 on this endpoint usually means the tier has no MR-approval settings (Premium+ feature).
-      warn(
-        `merge-risk: could not read project approval settings (${error instanceof Error ? error.message : String(error)}); assuming approvals are not reset on push.`,
-      )
-      return false
-    }
   }
 
   const readExternalCheckId = async (context: string): Promise<number | undefined> => {
@@ -173,21 +173,21 @@ export const createGitLabPort = ({
       return await res.text()
     },
     listReviews: async (pr) => {
-      const [mr, approvals, resetOnPush] = await Promise.all([
+      const [mr, approvals, versions, notes] = await Promise.all([
         getMr(pr),
         getJson(`${mrBase(pr)}/approvals`, approvalsSchema),
-        resetApprovalsOnPush(),
+        paginate(`${mrBase(pr)}/versions`, versionSchema),
+        getNotes(pr),
       ])
-      // Fail closed on stale approvals: head-stamp (so the gate counts it) only when reset-on-push is ON.
-      const stampCommit = resetOnPush ? mr.diff_refs?.head_sha : undefined
-      if (!resetOnPush && approvals.approved_by.length > 0) {
-        warn(
-          'merge-risk: approvals are NOT counted — "Remove all approvals when commits are added" is OFF or unreadable by MERGE_RISK_TOKEN. Enable it in Settings → Merge requests and give the token access to project approval settings so approvals apply to the current head.',
-        )
-      }
-      return approvals.approved_by.map((entry) =>
-        approvalReview(entry.user, stampCommit, selfUsername),
-      )
+      // Count an approval only if it post-dates the last push — per-commit strictness on every tier,
+      // without the Premium/Maintainer-only project setting.
+      const lastPushAt = latestPushTime(versions)
+      const approvedAt = latestApprovalTimes(notes)
+      const headSha = mr.diff_refs?.head_sha
+      return approvals.approved_by.map((entry) => {
+        const fresh = isFreshApproval(approvedAt.get(entry.user.username), lastPushAt)
+        return approvalReview(entry.user, fresh ? headSha : undefined, selfUsername)
+      })
     },
     listLabels: async (pr) => (await getMr(pr)).labels,
     addLabel: async (pr, label) => {
@@ -203,7 +203,7 @@ export const createGitLabPort = ({
       )
     },
     listComments: async (pr) => {
-      const notes = await paginate(`${mrBase(pr)}/notes`, noteSchema)
+      const notes = await getNotes(pr)
       return notes.map(
         (note): IssueComment => ({
           id: note.id,
