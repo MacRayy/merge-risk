@@ -29221,11 +29221,13 @@ var parseFileChunk = (chunk) => {
 var parseUnifiedDiff = (diff) => diff.split(/^diff --git /m).filter((chunk) => chunk.trim() !== "").map(parseFileChunk);
 
 // src/gitlab/gitlab-api.ts
-var userSchema = external_exports.object({ username: external_exports.string() });
+var userSchema = external_exports.object({ username: external_exports.string(), bot: external_exports.boolean().optional() });
 var mrSchema = external_exports.object({
   author: userSchema,
-  diff_refs: external_exports.object({ base_sha: external_exports.string(), head_sha: external_exports.string() }),
-  changes_count: external_exports.string().optional(),
+  // Null while GitLab is still generating the diff just after an open/push; the caller retries.
+  diff_refs: external_exports.object({ base_sha: external_exports.string(), head_sha: external_exports.string() }).nullable(),
+  // Null (alongside diff_refs) during that same async-generation window; `.nullish()` tolerates it.
+  changes_count: external_exports.string().nullish(),
   labels: external_exports.array(external_exports.string()).default([])
 });
 var approvalsSchema = external_exports.object({
@@ -29242,6 +29244,10 @@ var diffSchema = external_exports.object({
   deleted_file: external_exports.boolean().default(false),
   a_mode: external_exports.string().default(""),
   b_mode: external_exports.string().default(""),
+  // GitLab withholds the patch (empty `diff`) for a diff it considers too large or collapses; these
+  // flags are the authoritative "content was withheld" signal, independent of any rename/mode change.
+  too_large: external_exports.boolean().optional().default(false),
+  collapsed: external_exports.boolean().optional().default(false),
   diff: external_exports.string().default("")
 });
 var noteSchema = external_exports.object({
@@ -29252,12 +29258,13 @@ var noteSchema = external_exports.object({
 });
 var externalCheckSchema = external_exports.object({ id: external_exports.number(), name: external_exports.string() });
 var BINARY_MARKER = "Binary files ";
+var UNREADABLE = { addedLines: void 0, additions: 0, deletions: 0 };
 var diffSummary = (entry) => {
-  if (entry.diff.startsWith(BINARY_MARKER))
-    return { addedLines: void 0, additions: 0, deletions: 0 };
+  if (entry.diff.startsWith(BINARY_MARKER)) return UNREADABLE;
+  if (entry.too_large || entry.collapsed) return UNREADABLE;
   if (entry.diff === "") {
     const explainable = entry.renamed_file || entry.deleted_file || entry.a_mode !== entry.b_mode && !entry.new_file;
-    return explainable ? { addedLines: [], additions: 0, deletions: 0 } : { addedLines: void 0, additions: 0, deletions: 0 };
+    return explainable ? { addedLines: [], additions: 0, deletions: 0 } : UNREADABLE;
   }
   const hunks = summarizeHunks(entry.diff);
   return {
@@ -29276,12 +29283,14 @@ var toGitLabChangedFile = (entry) => {
     addedLines: summary.addedLines
   };
 };
-var approvalReview = (username, headCommit) => ({
-  reviewer: username,
-  isBot: false,
+var BOT_USERNAME = /^(project|group)_\d+_bot(_|$)/;
+var isBotApprover = (user, selfUsername) => user.bot === true || user.username === selfUsername || BOT_USERNAME.test(user.username);
+var approvalReview = (user, commit, selfUsername) => ({
+  reviewer: user.username,
+  isBot: isBotApprover(user, selfUsername),
   hasWriteAccess: true,
   state: "approved",
-  commit: headCommit
+  commit
 });
 var STATUS_STATE = {
   success: "success",
@@ -29341,6 +29350,14 @@ var createGitLabPort = ({
     };
     return await fetchPage(1);
   };
+  const mrCache = /* @__PURE__ */ new Map();
+  const getMr = async (pr) => {
+    const cached2 = mrCache.get(pr.number);
+    if (cached2 !== void 0) return await cached2;
+    const pending = getJson(mrBase(pr), mrSchema);
+    mrCache.set(pr.number, pending);
+    return await pending;
+  };
   const changedFileCount = async (pr, changesCount) => {
     const res = await request("GET", `${mrBase(pr)}/diffs?per_page=1`);
     ensureOk(res, `${mrBase(pr)}/diffs`);
@@ -29376,6 +29393,11 @@ var createGitLabPort = ({
   return {
     getPullRequest: async (pr) => {
       const mr = await getJson(mrBase(pr), mrSchema);
+      if (mr.diff_refs === null) {
+        throw new Error(
+          "merge-risk: the MR diff is not ready yet (GitLab is still generating it); retry the job in a moment."
+        );
+      }
       return {
         author: mr.author.username,
         baseSha: mr.diff_refs.base_sha,
@@ -29393,19 +29415,21 @@ var createGitLabPort = ({
     },
     listReviews: async (pr) => {
       const [mr, approvals, resetOnPush] = await Promise.all([
-        getJson(mrBase(pr), mrSchema),
+        getMr(pr),
         getJson(`${mrBase(pr)}/approvals`, approvalsSchema),
         resetApprovalsOnPush()
       ]);
+      const stampCommit = resetOnPush ? mr.diff_refs?.head_sha : void 0;
       if (!resetOnPush && approvals.approved_by.length > 0) {
         warn(
-          'merge-risk: "Remove all approvals when commits are added" is OFF; an approval given before a later push still counts. Enable it in Settings \u2192 Merge requests.'
+          'merge-risk: approvals are NOT counted \u2014 "Remove all approvals when commits are added" is OFF or unreadable by MERGE_RISK_TOKEN. Enable it in Settings \u2192 Merge requests and give the token access to project approval settings so approvals apply to the current head.'
         );
       }
-      const headCommit = mr.diff_refs.head_sha;
-      return approvals.approved_by.map((entry) => approvalReview(entry.user.username, headCommit));
+      return approvals.approved_by.map(
+        (entry) => approvalReview(entry.user, stampCommit, selfUsername)
+      );
     },
-    listLabels: async (pr) => (await getJson(mrBase(pr), mrSchema)).labels,
+    listLabels: async (pr) => (await getMr(pr)).labels,
     addLabel: async (pr, label) => {
       ensureOk(
         await request("PUT", `${mrBase(pr)}?add_labels=${encodeURIComponent(label)}`),
@@ -29469,6 +29493,10 @@ var required2 = (name, value) => {
   if (value === void 0 || value === "") throw new Error(`merge-risk: ${name} is required`);
   return value;
 };
+var envOr = (name, fallback) => {
+  const value = process.env[name];
+  return value === void 0 || value === "" ? fallback : value;
+};
 var readSelfUsername = async (apiUrl, token) => {
   const res = await fetch(`${apiUrl}/user`, { headers: { "PRIVATE-TOKEN": token } });
   if (!res.ok) throw new Error(`merge-risk: could not read the token user (GitLab ${res.status})`);
@@ -29482,10 +29510,13 @@ var runGitLabGate = async () => {
     return;
   }
   const apiUrl = required2("CI_API_V4_URL", process.env["CI_API_V4_URL"]);
-  const projectId = required2("CI_PROJECT_ID", process.env["CI_PROJECT_ID"]);
+  const projectId = required2(
+    "CI_MERGE_REQUEST_PROJECT_ID",
+    envOr("CI_MERGE_REQUEST_PROJECT_ID", process.env["CI_PROJECT_ID"] ?? "")
+  );
   const token = required2("MERGE_RISK_TOKEN", process.env["MERGE_RISK_TOKEN"]);
-  const policyPath = process.env["MERGE_RISK_POLICY"] ?? ".merge-risk.yml";
-  const statusContext = process.env["MERGE_RISK_STATUS_CONTEXT"] ?? "merge-risk";
+  const policyPath = envOr("MERGE_RISK_POLICY", ".merge-risk.yml");
+  const statusContext = envOr("MERGE_RISK_STATUS_CONTEXT", "merge-risk-verdict");
   const selfUsername = await readSelfUsername(apiUrl, token);
   const port = createGitLabPort({
     apiUrl,

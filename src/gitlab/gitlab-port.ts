@@ -17,16 +17,15 @@ import { z } from 'zod'
 export type GitLabPortConfig = {
   // The v4 API root, e.g. https://gitlab.com/api/v4 (CI_API_V4_URL).
   apiUrl: string
-  // Numeric id or url-encoded path; CI_PROJECT_ID is the reliable key.
+  // The MR's project: numeric id or url-encoded path (the target project for fork MRs).
   projectId: string
   token: string
   // The token user's username, so the gate recognises its own report note under any token.
   selfUsername: string
-  // Where a soft advisory (e.g. approvals not reset on push) is surfaced.
   warn: (message: string) => void
 }
 
-const parseCount = (value: string | undefined): number => {
+const parseCount = (value: string | null | undefined): number => {
   const parsed = Number.parseInt(value ?? '', 10)
   return Number.isNaN(parsed) ? 0 : parsed
 }
@@ -76,23 +75,31 @@ export const createGitLabPort = ({
       ensureOk(res, url)
       const body: unknown = await res.json()
       const items = z.array(schema).parse(body)
-      // GitLab's list endpoints use offset pagination (a numeric X-Next-Page, empty on the last page).
-      // Require a strictly larger integer so a missing or non-numeric cursor stops rather than loops.
+      // Offset pagination via X-Next-Page; require a strictly larger integer so a missing/bad cursor stops.
       const next = Number(res.headers.get('x-next-page'))
       return Number.isInteger(next) && next > page ? [...items, ...(await fetchPage(next))] : items
     }
     return await fetchPage(1)
   }
 
+  // listReviews (head SHA) + listLabels both read the MR; memoise the GET so one run spends one request.
+  // NOT used by getPullRequest — run-gate calls that again to detect a mid-run push (needs a live read).
+  const mrCache = new Map<number, Promise<z.infer<typeof mrSchema>>>()
+  const getMr = async (pr: ChangeRef): Promise<z.infer<typeof mrSchema>> => {
+    const cached = mrCache.get(pr.number)
+    if (cached !== undefined) return await cached
+    const pending = getJson(mrBase(pr), mrSchema)
+    mrCache.set(pr.number, pending)
+    return await pending
+  }
+
   const changedFileCount = async (
     pr: ChangeRef,
-    changesCount: string | undefined,
+    changesCount: string | null | undefined,
   ): Promise<number> => {
     const res = await request('GET', `${mrBase(pr)}/diffs?per_page=1`)
     ensureOk(res, `${mrBase(pr)}/diffs`)
-    // Number(null) is 0, so guard on the raw header being present — otherwise a missing X-Total would
-    // return 0 and silently disable the incomplete-listing guard. No header → fall back to the summary
-    // counter (its "N+" cap only over-reports, the safe direction).
+    // Guard on the header being present (Number(null) is 0): no X-Total → fall back to the summary count.
     const header = res.headers.get('x-total')
     const total = Number(header)
     return header !== null && Number.isInteger(total) && total >= 0
@@ -116,8 +123,7 @@ export const createGitLabPort = ({
   const readExternalCheckId = async (context: string): Promise<number | undefined> => {
     try {
       const checks = await paginate(`${projectBase}/external_status_checks`, externalCheckSchema)
-      // Only post against a check named for this gate; never guess, or a merge-risk verdict could
-      // satisfy or block an unrelated team's required check.
+      // Only post against a check named for this gate; guessing could satisfy/block another team's check.
       return checks.find((check) => check.name === context)?.id
     } catch {
       // No external status checks (not Ultimate / no permission): the commit status + job exit code gate.
@@ -125,8 +131,7 @@ export const createGitLabPort = ({
     }
   }
 
-  // Post a status without failing the run, but warn on BOTH a transport error and an HTTP-error
-  // response (fetch resolves a 4xx/5xx, so a lost-scope 403 would otherwise be swallowed silently).
+  // Post a status without failing the run; warn on transport AND HTTP errors (fetch resolves 4xx/5xx).
   const postBestEffort = async (
     path: string,
     body: Readonly<Record<string, unknown>>,
@@ -145,6 +150,12 @@ export const createGitLabPort = ({
   return {
     getPullRequest: async (pr) => {
       const mr = await getJson(mrBase(pr), mrSchema)
+      if (mr.diff_refs === null) {
+        // GitLab is still generating the diff (just after open/push); there's nothing to score yet.
+        throw new Error(
+          'merge-risk: the MR diff is not ready yet (GitLab is still generating it); retry the job in a moment.',
+        )
+      }
       return {
         author: mr.author.username,
         baseSha: mr.diff_refs.base_sha,
@@ -163,19 +174,22 @@ export const createGitLabPort = ({
     },
     listReviews: async (pr) => {
       const [mr, approvals, resetOnPush] = await Promise.all([
-        getJson(mrBase(pr), mrSchema),
+        getMr(pr),
         getJson(`${mrBase(pr)}/approvals`, approvalsSchema),
         resetApprovalsOnPush(),
       ])
+      // Fail closed on stale approvals: head-stamp (so the gate counts it) only when reset-on-push is ON.
+      const stampCommit = resetOnPush ? mr.diff_refs?.head_sha : undefined
       if (!resetOnPush && approvals.approved_by.length > 0) {
         warn(
-          'merge-risk: "Remove all approvals when commits are added" is OFF; an approval given before a later push still counts. Enable it in Settings → Merge requests.',
+          'merge-risk: approvals are NOT counted — "Remove all approvals when commits are added" is OFF or unreadable by MERGE_RISK_TOKEN. Enable it in Settings → Merge requests and give the token access to project approval settings so approvals apply to the current head.',
         )
       }
-      const headCommit = mr.diff_refs.head_sha
-      return approvals.approved_by.map((entry) => approvalReview(entry.user.username, headCommit))
+      return approvals.approved_by.map((entry) =>
+        approvalReview(entry.user, stampCommit, selfUsername),
+      )
     },
-    listLabels: async (pr) => (await getJson(mrBase(pr), mrSchema)).labels,
+    listLabels: async (pr) => (await getMr(pr)).labels,
     addLabel: async (pr, label) => {
       ensureOk(
         await request('PUT', `${mrBase(pr)}?add_labels=${encodeURIComponent(label)}`),

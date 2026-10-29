@@ -10,6 +10,12 @@ const required = (name: string, value: string | undefined): string => {
   return value
 }
 
+// A defined-but-empty CI variable falls back to the default (an empty env var is "unset" to us).
+const envOr = (name: string, fallback: string): string => {
+  const value = process.env[name]
+  return value === undefined || value === '' ? fallback : value
+}
+
 // Learn the token's own username so the gate recognises its own report note under any token.
 const readSelfUsername = async (apiUrl: string, token: string): Promise<string> => {
   const res = await fetch(`${apiUrl}/user`, { headers: { 'PRIVATE-TOKEN': token } })
@@ -27,10 +33,18 @@ export const runGitLabGate = async (): Promise<void> => {
     return
   }
   const apiUrl = required('CI_API_V4_URL', process.env['CI_API_V4_URL'])
-  const projectId = required('CI_PROJECT_ID', process.env['CI_PROJECT_ID'])
+  // The MR lives in the TARGET project. For a fork MR, CI_PROJECT_ID is the fork (source) — using it
+  // would 404 or hit an unrelated MR — while CI_MERGE_REQUEST_PROJECT_ID is the target and the IID's
+  // home. It equals CI_PROJECT_ID for same-repo MRs, so this is safe there and correct for forks.
+  const projectId = required(
+    'CI_MERGE_REQUEST_PROJECT_ID',
+    envOr('CI_MERGE_REQUEST_PROJECT_ID', process.env['CI_PROJECT_ID'] ?? ''),
+  )
   const token = required('MERGE_RISK_TOKEN', process.env['MERGE_RISK_TOKEN'])
-  const policyPath = process.env['MERGE_RISK_POLICY'] ?? '.merge-risk.yml'
-  const statusContext = process.env['MERGE_RISK_STATUS_CONTEXT'] ?? 'merge-risk'
+  const policyPath = envOr('MERGE_RISK_POLICY', '.merge-risk.yml')
+  // Default must NOT collide with the job name: GitLab already posts a commit status named after the
+  // job, so a second status of the same name 400s "name has already been taken" and never appears.
+  const statusContext = envOr('MERGE_RISK_STATUS_CONTEXT', 'merge-risk-verdict')
 
   const selfUsername = await readSelfUsername(apiUrl, token)
   const port = createGitLabPort({

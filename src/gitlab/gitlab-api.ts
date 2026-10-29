@@ -5,12 +5,14 @@ import { summarizeHunks } from '../core/unified-diff.ts'
 
 import { z } from 'zod'
 
-const userSchema = z.object({ username: z.string() })
+const userSchema = z.object({ username: z.string(), bot: z.boolean().optional() })
 
 export const mrSchema = z.object({
   author: userSchema,
-  diff_refs: z.object({ base_sha: z.string(), head_sha: z.string() }),
-  changes_count: z.string().optional(),
+  // Null while GitLab is still generating the diff just after an open/push; the caller retries.
+  diff_refs: z.object({ base_sha: z.string(), head_sha: z.string() }).nullable(),
+  // Null (alongside diff_refs) during that same async-generation window; `.nullish()` tolerates it.
+  changes_count: z.string().nullish(),
   labels: z.array(z.string()).default([]),
 })
 
@@ -30,6 +32,10 @@ export const diffSchema = z.object({
   deleted_file: z.boolean().default(false),
   a_mode: z.string().default(''),
   b_mode: z.string().default(''),
+  // GitLab withholds the patch (empty `diff`) for a diff it considers too large or collapses; these
+  // flags are the authoritative "content was withheld" signal, independent of any rename/mode change.
+  too_large: z.boolean().optional().default(false),
+  collapsed: z.boolean().optional().default(false),
   diff: z.string().default(''),
 })
 
@@ -52,21 +58,24 @@ type DiffSummary = {
 
 const BINARY_MARKER = 'Binary files '
 
-// GitLab omits the diff for binary files (a "Binary files … differ" marker) and may withhold it for a
-// collapsed/too-large diff (an empty string on a file with no structural reason to be empty). Either
-// way the content can't be shown harmless, so it counts as unreadable — mirrors the git-diff parser.
+const UNREADABLE: DiffSummary = { addedLines: undefined, additions: 0, deletions: 0 }
+
+// GitLab omits the diff for binary files (a "Binary files … differ" marker) and withholds it for a
+// too-large/collapsed diff (an empty string on a file whose content it declined to send). Either way
+// the content can't be shown harmless, so it counts as unreadable — mirrors the git-diff parser.
 const diffSummary = (entry: GitLabDiff): DiffSummary => {
-  if (entry.diff.startsWith(BINARY_MARKER))
-    return { addedLines: undefined, additions: 0, deletions: 0 }
+  if (entry.diff.startsWith(BINARY_MARKER)) return UNREADABLE
+  // A withheld diff (too_large/collapsed) is unreadable regardless of any rename/mode flag — a rename
+  // *with* a large content change carries renamed_file:true yet the content is still hidden, so the
+  // flags must win over the "structural reason" heuristic below (otherwise it fails open).
+  if (entry.too_large || entry.collapsed) return UNREADABLE
   if (entry.diff === '') {
     // A rename, delete, or mode-only change genuinely adds nothing. A *new* file with an empty diff is
     // GitLab withholding a too-large patch (new_file sets a_mode 0 → b_mode, so guard new_file out),
     // which must fail closed like a binary: unreadable → very-risky.
     const explainable =
       entry.renamed_file || entry.deleted_file || (entry.a_mode !== entry.b_mode && !entry.new_file)
-    return explainable
-      ? { addedLines: [], additions: 0, deletions: 0 }
-      : { addedLines: undefined, additions: 0, deletions: 0 }
+    return explainable ? { addedLines: [], additions: 0, deletions: 0 } : UNREADABLE
   }
   const hunks = summarizeHunks(entry.diff)
   return {
@@ -87,14 +96,30 @@ export const toGitLabChangedFile = (entry: GitLabDiff): ChangedFile => {
   }
 }
 
-// GitLab only lets a Developer+ approve and its approvals API carries no bot/commit fields, so the gate
-// treats every current approval as a write-access human vouching for the current head.
-export const approvalReview = (username: string, headCommit: string): Review => ({
-  reviewer: username,
-  isBot: false,
+type ApproverUser = { username: string; bot?: boolean | undefined }
+
+// Project/group service accounts follow this naming; their approvals must not vouch for a change.
+const BOT_USERNAME = /^(project|group)_\d+_bot(_|$)/
+
+// The gate's own token user, a flagged bot, or a service account is not a human reviewer. This matters
+// because MERGE_RISK_TOKEN is masked-but-unprotected (visible to every MR pipeline): without this, an
+// MR author could POST .../approve from their own job and the bot approval would satisfy the gate.
+export const isBotApprover = (user: ApproverUser, selfUsername: string): boolean =>
+  user.bot === true || user.username === selfUsername || BOT_USERNAME.test(user.username)
+
+// GitLab only lets a Developer+ approve, so a human approval carries write access. `commit` is stamped
+// by the caller: the head SHA only when "reset approvals on push" is confirmed on (so the approval
+// provably applies to the current head), otherwise undefined so the gate won't count a stale approval.
+export const approvalReview = (
+  user: ApproverUser,
+  commit: string | undefined,
+  selfUsername: string,
+): Review => ({
+  reviewer: user.username,
+  isBot: isBotApprover(user, selfUsername),
   hasWriteAccess: true,
   state: 'approved',
-  commit: headCommit,
+  commit,
 })
 
 // NOTE: a "request changes" blocker is intentionally not mapped. GitLab's REST MR response has no
