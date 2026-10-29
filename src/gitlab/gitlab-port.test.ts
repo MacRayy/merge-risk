@@ -12,6 +12,8 @@ const diff = (over: Partial<GitLabDiff> = {}): GitLabDiff => ({
   deleted_file: false,
   a_mode: '100644',
   b_mode: '100644',
+  too_large: false,
+  collapsed: false,
   diff: '',
   ...over,
 })
@@ -49,6 +51,18 @@ describe('toGitLabChangedFile', () => {
   it('fails closed: a new file with a withheld (empty) diff is unreadable, not empty', () => {
     expect(
       toGitLabChangedFile(diff({ diff: '', new_file: true, a_mode: '0', b_mode: '100644' }))
+        .addedLines,
+    ).toBeUndefined()
+  })
+
+  it('fails closed: a too_large/collapsed diff is unreadable even with a rename or mode flag', () => {
+    expect(
+      toGitLabChangedFile(
+        diff({ diff: '', too_large: true, renamed_file: true, old_path: 'src/b.ts' }),
+      ).addedLines,
+    ).toBeUndefined()
+    expect(
+      toGitLabChangedFile(diff({ diff: '', collapsed: true, a_mode: '100644', b_mode: '100755' }))
         .addedLines,
     ).toBeUndefined()
   })
@@ -114,32 +128,78 @@ describe('createGitLabPort', () => {
     expect(pull.changedFiles).toBe(3)
   })
 
-  it('maps each current approval to a head-stamped approval review', async () => {
-    stubFetch((url) => {
+  const approvalRoutes =
+    (approvedBy: ReadonlyArray<{ username: string; bot?: boolean }>, resetOnPush: boolean) =>
+    (url: string): Route => {
       if (url.includes('/approvals') && url.includes('/merge_requests/'))
-        return { body: { approved_by: [{ user: { username: 'alice' } }] } }
-      if (url.includes('/projects/42/approvals')) return { body: { reset_approvals_on_push: true } }
+        return { body: { approved_by: approvedBy.map((user) => ({ user })) } }
+      if (url.includes('/projects/42/approvals'))
+        return { body: { reset_approvals_on_push: resetOnPush } }
       return { body: mr }
-    })
+    }
+
+  it('head-stamps approvals (so the gate counts them) when reset-on-push is ON', async () => {
+    stubFetch(approvalRoutes([{ username: 'alice' }], true))
     const reviews = await createGitLabPort(config()).listReviews(PR)
     expect(reviews).toEqual([
       { reviewer: 'alice', isBot: false, hasWriteAccess: true, state: 'approved', commit: 'head' },
     ])
   })
 
-  it('warns when approvals are not reset on push', async () => {
+  it('fails closed — no commit stamp (uncounted) + warns — when reset-on-push is OFF', async () => {
     const warn = vi.fn()
-    stubFetch((url) => {
-      if (url.includes('/merge_requests/') && url.includes('/approvals'))
-        return { body: { approved_by: [{ user: { username: 'alice' } }] } }
-      if (url.includes('/projects/42/approvals'))
-        return { body: { reset_approvals_on_push: false } }
+    stubFetch(approvalRoutes([{ username: 'alice' }], false))
+    const reviews = await createGitLabPort(config(warn)).listReviews(PR)
+    expect(reviews[0]?.commit).toBeUndefined()
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('NOT counted'))
+  })
+
+  it('flags the token user and service-account approvals as bots so they cannot satisfy review', async () => {
+    stubFetch(
+      approvalRoutes(
+        [
+          { username: 'merge-risk-bot' },
+          { username: 'project_42_bot_abc' },
+          { username: 'bob', bot: true },
+        ],
+        true,
+      ),
+    )
+    const reviews = await createGitLabPort(config()).listReviews(PR)
+    expect(reviews.map((review) => review.isBot)).toEqual([true, true, true])
+  })
+
+  it('throws a clear error when the MR diff is not ready (null diff_refs)', async () => {
+    stubFetch((url) =>
+      url.includes('/diffs')
+        ? { body: [], headers: { 'x-total': '0' } }
+        : { body: { ...mr, diff_refs: null, changes_count: null } },
+    )
+    await expect(createGitLabPort(config()).getPullRequest(PR)).rejects.toThrow('not ready')
+  })
+
+  it('tolerates a null changes_count and uses the X-Total header', async () => {
+    stubFetch((url) =>
+      url.includes('/diffs')
+        ? { body: [], headers: { 'x-total': '5' } }
+        : { body: { ...mr, changes_count: null } },
+    )
+    expect((await createGitLabPort(config()).getPullRequest(PR)).changedFiles).toBe(5)
+  })
+
+  it('fetches the MR once across listReviews and listLabels', async () => {
+    const mrGets: string[] = []
+    stubFetch((url, method) => {
+      if (method === 'GET' && (url.split('?')[0] ?? '').endsWith('/merge_requests/7'))
+        mrGets.push(url)
+      if (url.includes('/merge_requests/7/approvals')) return { body: { approved_by: [] } }
+      if (url.includes('/projects/42/approvals')) return { body: { reset_approvals_on_push: true } }
       return { body: mr }
     })
-    await createGitLabPort(config(warn)).listReviews(PR)
-    expect(warn).toHaveBeenCalledWith(
-      expect.stringContaining('Remove all approvals when commits are added'),
-    )
+    const port = createGitLabPort(config())
+    await port.listReviews(PR)
+    await port.listLabels(PR)
+    expect(mrGets).toHaveLength(1)
   })
 
   it('recognises its own report note by the token username, and bot/system notes', async () => {
