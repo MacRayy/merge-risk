@@ -29233,9 +29233,7 @@ var mrSchema = external_exports.object({
 var approvalsSchema = external_exports.object({
   approved_by: external_exports.array(external_exports.object({ user: userSchema })).default([])
 });
-var projectApprovalsSchema = external_exports.object({
-  reset_approvals_on_push: external_exports.boolean().default(false)
-});
+var versionSchema = external_exports.object({ created_at: external_exports.string() });
 var diffSchema = external_exports.object({
   old_path: external_exports.string(),
   new_path: external_exports.string(),
@@ -29254,8 +29252,26 @@ var noteSchema = external_exports.object({
   id: external_exports.number(),
   body: external_exports.string().default(""),
   system: external_exports.boolean().default(false),
+  created_at: external_exports.string().default(""),
   author: userSchema
 });
+var APPROVED_NOTE = "approved this merge request";
+var latestApprovalTimes = (notes) => {
+  const times = /* @__PURE__ */ new Map();
+  for (const note of notes) {
+    if (!note.system || note.body !== APPROVED_NOTE) continue;
+    const at = Date.parse(note.created_at);
+    if (Number.isNaN(at)) continue;
+    const prev = times.get(note.author.username);
+    if (prev === void 0 || at > prev) times.set(note.author.username, at);
+  }
+  return times;
+};
+var latestPushTime = (versions) => {
+  const times = versions.map((v) => Date.parse(v.created_at)).filter((t) => !Number.isNaN(t));
+  return times.length > 0 ? Math.max(...times) : void 0;
+};
+var isFreshApproval = (approvedAt, lastPushAt) => lastPushAt === void 0 || approvedAt !== void 0 && approvedAt >= lastPushAt;
 var externalCheckSchema = external_exports.object({ id: external_exports.number(), name: external_exports.string() });
 var BINARY_MARKER = "Binary files ";
 var UNREADABLE = { addedLines: void 0, additions: 0, deletions: 0 };
@@ -29358,22 +29374,20 @@ var createGitLabPort = ({
     mrCache.set(pr.number, pending);
     return await pending;
   };
+  const notesCache = /* @__PURE__ */ new Map();
+  const getNotes = async (pr) => {
+    const cached2 = notesCache.get(pr.number);
+    if (cached2 !== void 0) return await cached2;
+    const pending = paginate(`${mrBase(pr)}/notes`, noteSchema);
+    notesCache.set(pr.number, pending);
+    return await pending;
+  };
   const changedFileCount = async (pr, changesCount) => {
     const res = await request("GET", `${mrBase(pr)}/diffs?per_page=1`);
     ensureOk(res, `${mrBase(pr)}/diffs`);
     const header = res.headers.get("x-total");
     const total = Number(header);
     return header !== null && Number.isInteger(total) && total >= 0 ? total : parseCount(changesCount);
-  };
-  const resetApprovalsOnPush = async () => {
-    try {
-      return (await getJson(`${projectBase}/approvals`, projectApprovalsSchema)).reset_approvals_on_push;
-    } catch (error62) {
-      warn(
-        `merge-risk: could not read project approval settings (${error62 instanceof Error ? error62.message : String(error62)}); assuming approvals are not reset on push.`
-      );
-      return false;
-    }
   };
   const readExternalCheckId = async (context) => {
     try {
@@ -29414,20 +29428,19 @@ var createGitLabPort = ({
       return await res.text();
     },
     listReviews: async (pr) => {
-      const [mr, approvals, resetOnPush] = await Promise.all([
+      const [mr, approvals, versions, notes] = await Promise.all([
         getMr(pr),
         getJson(`${mrBase(pr)}/approvals`, approvalsSchema),
-        resetApprovalsOnPush()
+        paginate(`${mrBase(pr)}/versions`, versionSchema),
+        getNotes(pr)
       ]);
-      const stampCommit = resetOnPush ? mr.diff_refs?.head_sha : void 0;
-      if (!resetOnPush && approvals.approved_by.length > 0) {
-        warn(
-          'merge-risk: approvals are NOT counted \u2014 "Remove all approvals when commits are added" is OFF or unreadable by MERGE_RISK_TOKEN. Enable it in Settings \u2192 Merge requests and give the token access to project approval settings so approvals apply to the current head.'
-        );
-      }
-      return approvals.approved_by.map(
-        (entry) => approvalReview(entry.user, stampCommit, selfUsername)
-      );
+      const lastPushAt = latestPushTime(versions);
+      const approvedAt = latestApprovalTimes(notes);
+      const headSha = mr.diff_refs?.head_sha;
+      return approvals.approved_by.map((entry) => {
+        const fresh = isFreshApproval(approvedAt.get(entry.user.username), lastPushAt);
+        return approvalReview(entry.user, fresh ? headSha : void 0, selfUsername);
+      });
     },
     listLabels: async (pr) => (await getMr(pr)).labels,
     addLabel: async (pr, label) => {
@@ -29443,7 +29456,7 @@ var createGitLabPort = ({
       );
     },
     listComments: async (pr) => {
-      const notes = await paginate(`${mrBase(pr)}/notes`, noteSchema);
+      const notes = await getNotes(pr);
       return notes.map(
         (note) => ({
           id: note.id,

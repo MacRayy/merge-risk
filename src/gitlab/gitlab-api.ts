@@ -20,9 +20,8 @@ export const approvalsSchema = z.object({
   approved_by: z.array(z.object({ user: userSchema })).default([]),
 })
 
-export const projectApprovalsSchema = z.object({
-  reset_approvals_on_push: z.boolean().default(false),
-})
+// A diff version is created on every push; the newest one's created_at is when the head was last pushed.
+export const versionSchema = z.object({ created_at: z.string() })
 
 export const diffSchema = z.object({
   old_path: z.string(),
@@ -43,8 +42,44 @@ export const noteSchema = z.object({
   id: z.number(),
   body: z.string().default(''),
   system: z.boolean().default(false),
+  created_at: z.string().default(''),
   author: userSchema,
 })
+
+export type GitLabNote = z.infer<typeof noteSchema>
+
+// GitLab records an approval as this exact system note; the newest one per user dates their current approval.
+const APPROVED_NOTE = 'approved this merge request'
+
+// Newest approval-note time (ms) per username. An unapproval leaves no approval note, so a user still in
+// approved_by always has one — the most recent approval wins over any earlier approve/unapprove churn.
+export const latestApprovalTimes = (notes: readonly GitLabNote[]): Map<string, number> => {
+  const times = new Map<string, number>()
+  for (const note of notes) {
+    if (!note.system || note.body !== APPROVED_NOTE) continue
+    const at = Date.parse(note.created_at)
+    if (Number.isNaN(at)) continue
+    const prev = times.get(note.author.username)
+    if (prev === undefined || at > prev) times.set(note.author.username, at)
+  }
+  return times
+}
+
+// The last push is the newest diff-version time; max over ALL versions so response order/pagination
+// never matter. Undefined when there are none (or none parse) → the caller then trusts the approval.
+export const latestPushTime = (
+  versions: ReadonlyArray<{ created_at: string }>,
+): number | undefined => {
+  const times = versions.map((v) => Date.parse(v.created_at)).filter((t) => !Number.isNaN(t))
+  return times.length > 0 ? Math.max(...times) : undefined
+}
+
+// An approval applies to the current head when it was given at/after the last push. With no known push
+// time (no versions / unparseable) we trust the approval, so the gate still works on every tier.
+export const isFreshApproval = (
+  approvedAt: number | undefined,
+  lastPushAt: number | undefined,
+): boolean => lastPushAt === undefined || (approvedAt !== undefined && approvedAt >= lastPushAt)
 
 export const externalCheckSchema = z.object({ id: z.number(), name: z.string() })
 
@@ -108,8 +143,8 @@ export const isBotApprover = (user: ApproverUser, selfUsername: string): boolean
   user.bot === true || user.username === selfUsername || BOT_USERNAME.test(user.username)
 
 // GitLab only lets a Developer+ approve, so a human approval carries write access. `commit` is stamped
-// by the caller: the head SHA only when "reset approvals on push" is confirmed on (so the approval
-// provably applies to the current head), otherwise undefined so the gate won't count a stale approval.
+// by the caller: the head SHA only when the approval was given after the last push (so it provably
+// applies to the current head), otherwise undefined so the gate won't count a stale approval.
 export const approvalReview = (
   user: ApproverUser,
   commit: string | undefined,

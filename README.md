@@ -183,13 +183,15 @@ file (`.merge-risk.yml`) and its format are identical; the protected "workflow" 
    the target branch). The job exits non-zero until the tier's review requirement is met, so the
    merge stays blocked. On **Ultimate**, add a **Status check** named to match
    `MERGE_RISK_STATUS_CONTEXT` and the gate also posts to it as a required, natively re-evaluated
-   check.
-5. Enable **Settings → Merge requests → "Remove all approvals when commits are added"** so an
-   approval only counts for the commit it was given on (GitLab's approvals API carries no per-commit
-   data; the gate warns on each run while this is off).
+   check. The gate only counts an approval given **after the last push** (it reads the newest diff
+   version's time and the approval system-note times), so a stale approval from an earlier commit
+   never vouches for a later one — on every tier, with no extra setup. For belt-and-braces you can
+   still enable **Settings → Merge requests → "Remove all approvals when commits are added"**, but
+   it isn't required.
 
 The job reads the merge request from GitLab's predefined CI variables (`CI_API_V4_URL`,
-`CI_PROJECT_ID`, `CI_MERGE_REQUEST_IID`). `MERGE_RISK_POLICY` and `MERGE_RISK_STATUS_CONTEXT`
+`CI_MERGE_REQUEST_PROJECT_ID` — the target project, which is what fork MRs need; it falls back to
+`CI_PROJECT_ID` — and `CI_MERGE_REQUEST_IID`). `MERGE_RISK_POLICY` and `MERGE_RISK_STATUS_CONTEXT`
 override the policy path and status name.
 
 ### Known limits (GitLab)
@@ -202,10 +204,10 @@ override the policy path and status name.
 - **The status name must differ from the job name.** GitLab publishes a commit status named after
   the CI job, so if the job is `merge-risk` the gate's own `merge-risk` status collides (400 "name
   has already been taken"). Set `MERGE_RISK_STATUS_CONTEXT` distinctly, as the setup snippet does.
-- **Reading approval settings needs Maintainer.** `GET /projects/:id/approvals` (used to check
-  reset-on-push) is Maintainer-only and Premium+; with a Developer token it 403s and the gate falls
-  back to a per-run warning — which is why enabling reset-on-push is a setup step, not something it
-  reads.
+- **Per-commit approval freshness works on every tier.** The gate dates each approval from its
+  system note and compares it to the newest diff version's time, so it counts only approvals given
+  after the last push — without reading the Premium/Maintainer-only `GET /projects/:id/approvals`
+  setting. A Developer token on any tier is enough.
 - **A "request changes" review doesn't block (yet).** The GitLab REST MR response carries no
   per-reviewer verdict, so the gate relies on the approval count. Use GitLab's own blocking reviews,
   or a protected branch, if you need a requested-changes hard stop.

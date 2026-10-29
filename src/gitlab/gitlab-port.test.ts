@@ -1,8 +1,64 @@
 import type { ChangeRef } from '../core/review-port.ts'
-import { type GitLabDiff, toGitLabChangedFile } from './gitlab-api.ts'
+import {
+  type GitLabDiff,
+  type GitLabNote,
+  isFreshApproval,
+  latestApprovalTimes,
+  latestPushTime,
+  toGitLabChangedFile,
+} from './gitlab-api.ts'
 import { createGitLabPort, type GitLabPortConfig } from './gitlab-port.ts'
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
+
+const note = (over: Partial<GitLabNote>): GitLabNote => ({
+  id: 1,
+  body: 'approved this merge request',
+  system: true,
+  created_at: '2026-01-01T00:00:00Z',
+  author: { username: 'alice' },
+  ...over,
+})
+
+describe('latestApprovalTimes', () => {
+  it('keeps the newest approval time per user and ignores non-approval / non-system notes', () => {
+    const times = latestApprovalTimes([
+      note({ author: { username: 'alice' }, created_at: '2026-01-01T00:00:00Z' }),
+      note({ author: { username: 'alice' }, created_at: '2026-01-03T00:00:00Z' }),
+      note({ author: { username: 'bob' }, body: 'commented', created_at: '2026-01-05T00:00:00Z' }),
+      note({ author: { username: 'carol' }, system: false, created_at: '2026-01-05T00:00:00Z' }),
+    ])
+    expect(times.get('alice')).toBe(Date.parse('2026-01-03T00:00:00Z'))
+    expect(times.has('bob')).toBe(false)
+    expect(times.has('carol')).toBe(false)
+  })
+})
+
+describe('latestPushTime', () => {
+  it('returns the max time across all versions regardless of order, undefined when none', () => {
+    expect(
+      latestPushTime([
+        { created_at: '2026-01-01T00:00:00Z' },
+        { created_at: '2026-01-03T00:00:00Z' },
+        { created_at: '2026-01-02T00:00:00Z' },
+      ]),
+    ).toBe(Date.parse('2026-01-03T00:00:00Z'))
+    expect(latestPushTime([])).toBeUndefined()
+    expect(latestPushTime([{ created_at: 'not-a-date' }])).toBeUndefined()
+  })
+})
+
+describe('isFreshApproval', () => {
+  it('trusts the approval when the push time is unknown (every-tier fallback)', () => {
+    expect(isFreshApproval(undefined, undefined)).toBe(true)
+  })
+  it('counts an approval at/after the push and rejects one before it', () => {
+    expect(isFreshApproval(200, 100)).toBe(true)
+    expect(isFreshApproval(100, 100)).toBe(true)
+    expect(isFreshApproval(50, 100)).toBe(false)
+    expect(isFreshApproval(undefined, 100)).toBe(false)
+  })
+})
 
 const diff = (over: Partial<GitLabDiff> = {}): GitLabDiff => ({
   old_path: 'src/a.ts',
@@ -128,41 +184,127 @@ describe('createGitLabPort', () => {
     expect(pull.changedFiles).toBe(3)
   })
 
+  type Approver = { username: string; bot?: boolean; approvedAt?: string }
+
   const approvalRoutes =
-    (approvedBy: ReadonlyArray<{ username: string; bot?: boolean }>, resetOnPush: boolean) =>
+    (approvedBy: readonly Approver[], pushedAt: string) =>
     (url: string): Route => {
+      if (url.includes('/versions')) return { body: [{ created_at: pushedAt }] }
+      if (url.includes('/notes'))
+        return {
+          body: approvedBy
+            .filter((user) => user.approvedAt !== undefined)
+            .map((user, index) => ({
+              id: index + 1,
+              body: 'approved this merge request',
+              system: true,
+              created_at: user.approvedAt,
+              author: { username: user.username },
+            })),
+        }
       if (url.includes('/approvals') && url.includes('/merge_requests/'))
-        return { body: { approved_by: approvedBy.map((user) => ({ user })) } }
-      if (url.includes('/projects/42/approvals'))
-        return { body: { reset_approvals_on_push: resetOnPush } }
+        return {
+          body: {
+            approved_by: approvedBy.map((user) => ({
+              user: { username: user.username, bot: user.bot },
+            })),
+          },
+        }
       return { body: mr }
     }
 
-  it('head-stamps approvals (so the gate counts them) when reset-on-push is ON', async () => {
-    stubFetch(approvalRoutes([{ username: 'alice' }], true))
+  it('head-stamps an approval given after the last push (so the gate counts it)', async () => {
+    stubFetch(
+      approvalRoutes(
+        [{ username: 'alice', approvedAt: '2026-01-02T00:00:00Z' }],
+        '2026-01-01T00:00:00Z',
+      ),
+    )
     const reviews = await createGitLabPort(config()).listReviews(PR)
     expect(reviews).toEqual([
       { reviewer: 'alice', isBot: false, hasWriteAccess: true, state: 'approved', commit: 'head' },
     ])
   })
 
-  it('fails closed — no commit stamp (uncounted) + warns — when reset-on-push is OFF', async () => {
-    const warn = vi.fn()
-    stubFetch(approvalRoutes([{ username: 'alice' }], false))
-    const reviews = await createGitLabPort(config(warn)).listReviews(PR)
+  it('fails closed — no commit stamp — on a stale approval given before the last push', async () => {
+    stubFetch(
+      approvalRoutes(
+        [{ username: 'alice', approvedAt: '2026-01-01T00:00:00Z' }],
+        '2026-01-02T00:00:00Z',
+      ),
+    )
+    const reviews = await createGitLabPort(config()).listReviews(PR)
     expect(reviews[0]?.commit).toBeUndefined()
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining('NOT counted'))
+  })
+
+  it('counts the approval on every tier even when no diff versions are returned', async () => {
+    stubFetch((url) => {
+      if (url.includes('/versions')) return { body: [] }
+      if (url.includes('/notes')) return { body: [] }
+      if (url.includes('/merge_requests/7/approvals'))
+        return { body: { approved_by: [{ user: { username: 'alice' } }] } }
+      return { body: mr }
+    })
+    const reviews = await createGitLabPort(config()).listReviews(PR)
+    expect(reviews[0]?.commit).toBe('head')
+  })
+
+  it('takes the latest push time across all versions regardless of order (newest not first)', async () => {
+    // The newest version is NOT element 0, so indexing [0] would wrongly treat the approval as fresh.
+    stubFetch((url) => {
+      if (url.includes('/versions'))
+        return {
+          body: [
+            { created_at: '2026-01-01T00:00:00Z' },
+            { created_at: '2026-01-03T00:00:00Z' },
+            { created_at: '2026-01-02T00:00:00Z' },
+          ],
+        }
+      if (url.includes('/notes'))
+        return {
+          body: [
+            {
+              id: 1,
+              body: 'approved this merge request',
+              system: true,
+              created_at: '2026-01-02T12:00:00Z',
+              author: { username: 'alice' },
+            },
+          ],
+        }
+      if (url.includes('/merge_requests/7/approvals'))
+        return { body: { approved_by: [{ user: { username: 'alice' } }] } }
+      return { body: mr }
+    })
+    const reviews = await createGitLabPort(config()).listReviews(PR)
+    // Approved Jan 2, latest push Jan 3 → stale → uncounted (would be counted if [0]='Jan 1' were used).
+    expect(reviews[0]?.commit).toBeUndefined()
+  })
+
+  it('pages the notes once across listReviews and listComments', async () => {
+    const noteGets: string[] = []
+    stubFetch((url, method) => {
+      if (method === 'GET' && url.includes('/merge_requests/7/notes')) noteGets.push(url)
+      if (url.includes('/merge_requests/7/approvals')) return { body: { approved_by: [] } }
+      if (url.includes('/versions')) return { body: [] }
+      if (url.includes('/notes')) return { body: [] }
+      return { body: mr }
+    })
+    const port = createGitLabPort(config())
+    await port.listReviews(PR)
+    await port.listComments(PR)
+    expect(noteGets).toHaveLength(1)
   })
 
   it('flags the token user and service-account approvals as bots so they cannot satisfy review', async () => {
     stubFetch(
       approvalRoutes(
         [
-          { username: 'merge-risk-bot' },
-          { username: 'project_42_bot_abc' },
-          { username: 'bob', bot: true },
+          { username: 'merge-risk-bot', approvedAt: '2026-01-02T00:00:00Z' },
+          { username: 'project_42_bot_abc', approvedAt: '2026-01-02T00:00:00Z' },
+          { username: 'bob', bot: true, approvedAt: '2026-01-02T00:00:00Z' },
         ],
-        true,
+        '2026-01-01T00:00:00Z',
       ),
     )
     const reviews = await createGitLabPort(config()).listReviews(PR)
@@ -193,7 +335,8 @@ describe('createGitLabPort', () => {
       if (method === 'GET' && (url.split('?')[0] ?? '').endsWith('/merge_requests/7'))
         mrGets.push(url)
       if (url.includes('/merge_requests/7/approvals')) return { body: { approved_by: [] } }
-      if (url.includes('/projects/42/approvals')) return { body: { reset_approvals_on_push: true } }
+      if (url.includes('/versions')) return { body: [] }
+      if (url.includes('/notes')) return { body: [] }
       return { body: mr }
     })
     const port = createGitLabPort(config())
